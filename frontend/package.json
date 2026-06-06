@@ -1,0 +1,24 @@
+{
+  "name": "cu-market-intelligence-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "recharts": "^2.13.3",
+    "mapbox-gl": "^3.8.0",
+    "@mapbox/mapbox-gl-draw": "^1.4.3",
+    "topojson-client": "^3.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.5"
+  }
+}
