@@ -1,0 +1,57 @@
+# ── Project-specific ──────────────────────────────────────────────────────────
+.claude/
+CLAUDE.md
+.env
+.env.*
+!.env.example
+
+# Raw data drops — never commit source CSVs
+data/raw/
+data/processed/
+
+# Generated reports
+reports/output/
+*.docx
+*.xlsx
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ── Node / Frontend ────────────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/build/
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+alembic/versions/*.pyc
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
