@@ -1167,7 +1167,7 @@ async def list_alerts(
     ]
 
 
-@router.post("/{alert_id}/acknowledge", status_code=204)
+@router.post("/{alert_id}/acknowledge", status_code=204, response_model=None)
 async def acknowledge_alert(alert_id: int, tenant_id: str) -> None:
     engine = get_engine()
     with engine.begin() as conn:
