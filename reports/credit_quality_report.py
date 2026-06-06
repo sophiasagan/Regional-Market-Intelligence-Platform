@@ -29,8 +29,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
-from ..database import get_engine
-from ..processing.delinquency_engine import get_regional_peers
+from database import get_engine
+from processing.delinquency_engine import get_regional_peers
 
 logger = logging.getLogger(__name__)
 _client = anthropic.AsyncAnthropic()
