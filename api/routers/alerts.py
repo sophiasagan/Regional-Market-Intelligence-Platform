@@ -1182,7 +1182,7 @@ async def acknowledge_alert(alert_id: int, tenant_id: str) -> None:
         raise HTTPException(404, "Alert not found or already acknowledged")
 
 
-@router.post("/{alert_id}/resolve", status_code=204)
+@router.post("/{alert_id}/resolve", status_code=204, response_model=None)
 async def resolve_alert(alert_id: int, tenant_id: str) -> None:
     """
     Mark an alert as manually resolved — e.g. after taking corrective action.
@@ -1250,7 +1250,7 @@ async def add_monitored(body: MonitoredGeoIn, tenant_id: str) -> MonitoredGeoOut
     return MonitoredGeoOut(**dict(row))
 
 
-@router.delete("/monitored/{geo_id}", status_code=204)
+@router.delete("/monitored/{geo_id}", status_code=204, response_model=None)
 async def remove_monitored(geo_id: int, tenant_id: str) -> None:
     engine = get_engine()
     with engine.begin() as conn:
