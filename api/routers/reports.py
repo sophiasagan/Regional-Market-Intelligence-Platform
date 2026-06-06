@@ -11,7 +11,7 @@ from fastapi import APIRouter
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from ...reports.credit_quality_report import generate_credit_quality_report
+from reports.credit_quality_report import generate_credit_quality_report
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 

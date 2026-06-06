@@ -20,13 +20,13 @@ import sqlalchemy as sa
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...database import get_engine
-from ...processing.delinquency_engine import (
+from database import get_engine
+from processing.delinquency_engine import (
     get_peer_distribution,
     get_percentile_rank,
     get_regional_peers,
 )
-from ...processing.market_share_engine import (
+from processing.market_share_engine import (
     VALID_GEOGRAPHY_TYPES,
     VALID_INSTITUTION_TYPES,
     VALID_METRICS,

@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import sqlalchemy as sa
 
-from ..database import get_engine
+from database import get_engine
 
 logger = logging.getLogger(__name__)
 

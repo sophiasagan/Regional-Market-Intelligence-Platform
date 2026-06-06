@@ -39,13 +39,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ...database import get_engine
-from ...processing.delinquency_engine import (
+from database import get_engine
+from processing.delinquency_engine import (
     get_peer_distribution,
     get_percentile_rank,
     get_regional_peers,
 )
-from ...processing.market_share_engine import calculate_market_share
+from processing.market_share_engine import calculate_market_share
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/alerts", tags=["alerts"])
