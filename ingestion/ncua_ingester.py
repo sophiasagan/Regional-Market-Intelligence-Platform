@@ -171,6 +171,46 @@ COLUMN_MAP: dict[str, str] = {
     "other_real_estate_owned":      "oreo_balance",
     "total_oreo":                   "oreo_balance",
     "foreclosed_assets":            "oreo_balance",
+
+    # ── NCUA FS220.txt account codes (ACCT_ prefix, 2017+ format) ────────────
+    # The NCUA replaced descriptive field names with account codes in 2017.
+    # Codes below derived from the NCUA 5300 Call Report data dictionary.
+
+    # Balance sheet totals
+    "acct_010":   "total_assets",
+    "acct_018":   "total_shares_deposits",
+    "acct_025b":  "total_loans",
+    "acct_083":   "total_members",
+    "acct_088":   "total_loans",        # alt code seen in recent FS220 exports
+    "acct_799c2": "total_loans",        # Total Loans and Leases (some years)
+    "acct_799c1": "loans_real_estate",  # Real Estate loans total
+
+    # Allowance for loan losses
+    "acct_719a":  "alll",
+    "acct_719":   "alll",
+
+    # Delinquency balances — FS220 uses 2-month buckets
+    "acct_745c1": "delinq_90day",       # 6+ months (180+ days) delinquent
+    "acct_745c2": "delinq_total",       # Total delinquent loans (all buckets)
+
+    # Charge-offs (net, year-to-date in annual; quarterly in 5300)
+    "acct_748a":  "net_charge_offs",
+    "acct_748":   "net_charge_offs",
+
+    # OREO / foreclosed assets
+    "acct_716a":  "oreo_balance",
+    "acct_716":   "oreo_balance",
+
+    # TDR (troubled debt restructuring)
+    "acct_387a":  "tdr_balance",
+    "acct_387":   "tdr_balance",
+
+    # Loan category balances (for per-type delinquency rate denominators)
+    "acct_025a":  "loans_real_estate",
+    "acct_395":   "loans_auto",
+    "acct_370":   "loans_credit_card",
+    "acct_400a":  "loans_commercial",
+    "acct_400b":  "loans_commercial",
 }
 
 REQUIRED_COLUMNS = {
