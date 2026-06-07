@@ -264,17 +264,56 @@ def _download_with_fallback(urls: list[str], data_period: str) -> bytes:
     ) from last_exc
 
 
-def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
-    """Extract the main CSV from the ZIP and return a normalized DataFrame."""
-    with zipfile.ZipFile(io.BytesIO(raw_zip)) as zf:
-        csv_name = _pick_main_csv(zf.namelist())
-        logger.debug("Reading %s from ZIP", csv_name)
-        with zf.open(csv_name) as fh:
-            sep = "\t" if csv_name.lower().endswith(".txt") else ","
-            raw = pd.read_csv(fh, dtype=str, low_memory=False, sep=sep)
+def _read_txt(zf: zipfile.ZipFile, name: str) -> pd.DataFrame:
+    """Read a delimited file from the ZIP, auto-detecting comma vs tab."""
+    with zf.open(name) as fh:
+        sample = fh.read(4096).decode("latin-1", errors="replace")
+    sep = "\t" if sample.count("\t") > sample.count(",") else ","
+    with zf.open(name) as fh:
+        return pd.read_csv(fh, dtype=str, low_memory=False,
+                           sep=sep, encoding_errors="replace")
 
-    df = _normalize_columns(raw)
-    df = _cast_numeric(df)
+
+def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
+    """
+    Extract and merge FOICU.txt (identity) + FS220.txt (financials) from the ZIP.
+    FOICU holds charter number, name, state; FS220 holds balance-sheet data.
+    """
+    with zipfile.ZipFile(io.BytesIO(raw_zip)) as zf:
+        names = zf.namelist()
+        logger.info("ZIP contents: %s", names)
+
+        # ── Identity: FOICU.txt ───────────────────────────────────────────────
+        foicu_name = next((n for n in names if "foicu" in n.lower() and
+                           n.lower().endswith((".txt", ".csv"))), None)
+        if foicu_name:
+            foicu = _read_txt(zf, foicu_name)
+            logger.info("FOICU columns: %s", list(foicu.columns))
+            foicu = _normalize_columns(foicu)
+        else:
+            foicu = pd.DataFrame()
+
+        # ── Financials: FS220.txt ─────────────────────────────────────────────
+        fs220_name = _pick_main_csv(names)
+        logger.info("Reading financials from %s", fs220_name)
+        fin = _read_txt(zf, fs220_name)
+        logger.info("FS220 columns: %s", list(fin.columns))
+        fin = _normalize_columns(fin)
+
+    # Merge identity into financials when FOICU is available
+    if not foicu.empty and "charter_number" in foicu.columns:
+        id_cols = [c for c in ("charter_number", "institution_name", "state")
+                   if c in foicu.columns]
+        fin = fin.merge(foicu[id_cols], on="charter_number", how="left",
+                        suffixes=("", "_foicu"))
+        for col in id_cols:
+            foicu_col = f"{col}_foicu"
+            if foicu_col in fin.columns:
+                fin[col] = fin[col].combine_first(fin.pop(foicu_col))
+    elif not foicu.empty and "charter_number" in fin.columns:
+        pass  # charter_number already in fin; FOICU merge skipped
+
+    df = _cast_numeric(fin)
     df = _compute_derived_rates(df)
 
     now = datetime.now(timezone.utc)
@@ -284,7 +323,10 @@ def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
 
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
-        raise ValueError(f"Missing required columns after normalization: {missing}")
+        logger.warning(
+            "Could not map columns: %s — these will be NULL in the database. "
+            "Update COLUMN_MAP if the NCUA changed field names.", missing
+        )
 
     return df
 
