@@ -247,10 +247,12 @@ async def summary(
         if not own:
             raise HTTPException(404, f"No data found for period {period}")
 
-        prior_period = _prior_period(period)
+        # Use the period data was actually found in (may differ when period has no data yet)
+        resolved_period = own.get("data_period", period)
+        prior_period = _prior_period(resolved_period)
         prior = _resolve_institution(conn, own.get("charter_number", ""), prior_period)
 
-        peers = _peer_rows(conn, own, period)
+        peers = _peer_rows(conn, own, resolved_period)
 
     def metric_summary(key: str, is_coverage: bool = False) -> dict:
         own_val = _safe_float(own.get(key))

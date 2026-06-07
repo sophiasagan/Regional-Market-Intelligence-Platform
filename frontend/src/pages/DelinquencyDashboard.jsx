@@ -431,7 +431,7 @@ function LoanTypeChart({ data }) {
   if (!data?.loan_types?.length || !hasAnyRate) return (
     <div style={{ padding: 32, textAlign: 'center', color: C.muted }}>
       <div style={{ fontWeight: 600, marginBottom: 6 }}>Per-type breakdown not available</div>
-      <div style={{ fontSize: 12 }}>NCUA 5300 call report data does not include sub-type delinquency balances in a standard field. Total delinquency rate is available on the Summary and Trend tabs.</div>
+      <div style={{ fontSize: 12 }}>NCUA 5300 does not report delinquency broken out by loan type in a standard machine-readable field. Your total delinquency rate is shown in the KPI cards at the top of this page, and 8-quarter history is on the Trend Analysis tab.</div>
     </div>
   );
 
