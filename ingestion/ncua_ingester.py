@@ -18,7 +18,7 @@ import pandas as pd
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..database import get_engine  # adjust import path to match your project
+from database import get_engine
 
 logger = logging.getLogger(__name__)
 
