@@ -49,7 +49,7 @@ def _fips_to_abbr(geo_id: str) -> str:
 _IQ_METRICS: dict[str, str] = {
     "deposits":             "total_shares_deposits",
     "loans":                "total_loans",
-    "members":              "member_count",
+    "members":              "total_members",
     "mortgage_originations":"loans_real_estate",
 }
 
