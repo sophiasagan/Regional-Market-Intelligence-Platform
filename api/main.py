@@ -29,12 +29,16 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-_allowed_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
+# Set CORS_ORIGINS=* in Railway to allow all origins (safe for demo/dev).
+# For production, set to comma-separated list of allowed origins.
+_cors_raw = os.environ.get("CORS_ORIGINS", "http://localhost:5173").strip()
+_allow_all_origins = _cors_raw == "*"
+_allowed_origins = ["*"] if _allow_all_origins else _cors_raw.split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
-    allow_credentials=True,
+    allow_credentials=not _allow_all_origins,  # credentials require explicit origins
     allow_methods=["*"],
     allow_headers=["*"],
 )

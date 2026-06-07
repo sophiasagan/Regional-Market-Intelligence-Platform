@@ -76,7 +76,12 @@ def _safe_float(v: Any) -> Optional[float]:
 def _resolve_institution(conn: sa.Connection, institution_id: str, period: str) -> dict:
     """
     Return the row for the given institution / period.
-    Falls back to the largest institution in that period if institution_id is blank.
+
+    Falls back gracefully:
+    1. Exact match (institution_id + period)
+    2. Institution's most recent available period (if future period requested)
+    3. Largest institution in the requested period
+    4. Largest institution in the most recent available period
     """
     if institution_id:
         row = conn.execute(
@@ -90,7 +95,20 @@ def _resolve_institution(conn: sa.Connection, institution_id: str, period: str) 
         if row:
             return dict(row)
 
-    # Fallback: largest institution by total_loans in period
+        # Institution exists but not in this period — use most recent period
+        row = conn.execute(
+            text("""
+                SELECT * FROM institutions_quarterly
+                WHERE charter_number = :id AND total_loans > 0
+                ORDER BY data_period DESC
+                LIMIT 1
+            """),
+            {"id": institution_id},
+        ).mappings().fetchone()
+        if row:
+            return dict(row)
+
+    # No institution_id — largest institution in requested period
     row = conn.execute(
         text("""
             SELECT * FROM institutions_quarterly
@@ -99,6 +117,18 @@ def _resolve_institution(conn: sa.Connection, institution_id: str, period: str) 
             LIMIT 1
         """),
         {"period": period},
+    ).mappings().fetchone()
+    if row:
+        return dict(row)
+
+    # Final fallback: largest institution in most recent available period
+    row = conn.execute(
+        text("""
+            SELECT * FROM institutions_quarterly
+            WHERE total_loans > 0
+            ORDER BY data_period DESC, total_loans DESC
+            LIMIT 1
+        """),
     ).mappings().fetchone()
 
     return dict(row) if row else {}
@@ -246,6 +276,11 @@ async def trend(
     latest_period = "2024Q4"
     periods = _recent_periods(latest_period, n_periods)
 
+    # Build safe IN-clause: :p0, :p1, ... :pN
+    p_keys = [f"p{i}" for i in range(len(periods))]
+    p_placeholders = ", ".join(f":{k}" for k in p_keys)
+    p_params = {k: v for k, v in zip(p_keys, periods)}
+
     engine = get_engine()
     with engine.connect() as conn:
         # Own institution data across periods
@@ -253,46 +288,51 @@ async def trend(
             text(f"""
                 SELECT data_period, {metric}, charter_number, state, total_assets
                 FROM institutions_quarterly
-                WHERE data_period = ANY(:periods)
+                WHERE data_period IN ({p_placeholders})
                   AND (:cid = '' OR charter_number = :cid)
                 ORDER BY data_period ASC
             """),
-            {"periods": periods, "cid": institution_id},
+            {**p_params, "cid": institution_id},
         ).mappings().fetchall()
 
         if not own_rows_raw and not institution_id:
-            # Fallback: pick largest institution and use its periods
+            # Fallback: pick largest institution in most recent available period
             fallback = conn.execute(
                 text("""
                     SELECT charter_number, state, total_assets
                     FROM institutions_quarterly
-                    WHERE data_period = :p AND total_loans > 0
-                    ORDER BY total_loans DESC LIMIT 1
+                    WHERE total_loans > 0
+                    ORDER BY data_period DESC, total_loans DESC LIMIT 1
                 """),
-                {"p": latest_period},
             ).mappings().fetchone()
             if fallback:
                 own_rows_raw = conn.execute(
                     text(f"""
                         SELECT data_period, {metric}, charter_number, state, total_assets
                         FROM institutions_quarterly
-                        WHERE data_period = ANY(:periods) AND charter_number = :cid
+                        WHERE charter_number = :cid
                         ORDER BY data_period ASC
+                        LIMIT :n
                     """),
-                    {"periods": periods, "cid": fallback["charter_number"]},
+                    {"cid": fallback["charter_number"], "n": n_periods},
                 ).mappings().fetchall()
 
         own_rows = {r["data_period"]: r for r in own_rows_raw}
 
         # Use state/assets from latest available row for peer matching
-        ref_row = own_rows.get(latest_period) or (list(own_rows.values())[-1] if own_rows else {})
+        ref_row = (list(own_rows.values()) or [{}])[-1]
         ref_state = ref_row.get("state") or ""
         ref_assets = _safe_float(ref_row.get("total_assets")) or 0
 
         lo = ref_assets * 0.25 if ref_assets > 0 else 0
         hi = ref_assets * 4.0 if ref_assets > 0 else 1e15
 
-        # Peer percentiles per period
+        # Actual periods that have own data — query peer stats for those
+        actual_periods = list(own_rows.keys()) or periods
+        ap_keys = [f"ap{i}" for i in range(len(actual_periods))]
+        ap_placeholders = ", ".join(f":{k}" for k in ap_keys)
+        ap_params = {k: v for k, v in zip(ap_keys, actual_periods)}
+
         peer_stats_raw = conn.execute(
             text(f"""
                 SELECT data_period,
@@ -300,7 +340,7 @@ async def trend(
                        percentile_cont(0.50) WITHIN GROUP (ORDER BY {metric}) AS median,
                        percentile_cont(0.75) WITHIN GROUP (ORDER BY {metric}) AS p75
                 FROM institutions_quarterly
-                WHERE data_period = ANY(:periods)
+                WHERE data_period IN ({ap_placeholders})
                   AND {metric} IS NOT NULL
                   AND {metric} > 0
                   AND (:state = '' OR state = :state)
@@ -308,18 +348,19 @@ async def trend(
                 GROUP BY data_period
                 ORDER BY data_period ASC
             """),
-            {"periods": periods, "state": ref_state, "lo": lo, "hi": hi},
+            {**ap_params, "state": ref_state, "lo": lo, "hi": hi},
         ).mappings().fetchall()
 
     peer_by_period = {r["data_period"]: r for r in peer_stats_raw}
 
-    own_values = [_safe_float((own_rows.get(p) or {}).get(metric)) for p in periods]
-    peer_median = [_safe_float((peer_by_period.get(p) or {}).get("median")) for p in periods]
-    peer_p25    = [_safe_float((peer_by_period.get(p) or {}).get("p25")) for p in periods]
-    peer_p75    = [_safe_float((peer_by_period.get(p) or {}).get("p75")) for p in periods]
+    display_periods = actual_periods if own_rows else periods
+    own_values = [_safe_float((own_rows.get(p) or {}).get(metric)) for p in display_periods]
+    peer_median = [_safe_float((peer_by_period.get(p) or {}).get("median")) for p in display_periods]
+    peer_p25    = [_safe_float((peer_by_period.get(p) or {}).get("p25")) for p in display_periods]
+    peer_p75    = [_safe_float((peer_by_period.get(p) or {}).get("p75")) for p in display_periods]
 
     return {
-        "periods": periods,
+        "periods": display_periods,
         "metric": metric,
         "own_values": own_values,
         "peer_median": peer_median,
