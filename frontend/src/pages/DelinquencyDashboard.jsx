@@ -183,6 +183,14 @@ function TrendChart({ data, metric }) {
     </div>
   );
 
+  const hasOwnData = data.own_values?.some(v => v != null);
+  if (!hasOwnData) return (
+    <div ref={ref} style={{ height: 260, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.muted }}>
+      <span style={{ fontSize: 15 }}>No institution-level data for this metric</span>
+      <span style={{ fontSize: 12 }}>NCUA 5300 does not report per-type delinquency in a standard machine-readable field.</span>
+    </div>
+  );
+
   const { periods, own_values, peer_median, peer_p25, peer_p75 } = data;
   const n     = periods.length;
   const H     = 264;
@@ -419,8 +427,12 @@ function PeerTable({ peers, anonymize }) {
 
 // ── LoanTypeChart (grouped bars) ──────────────────────────────────────────────
 function LoanTypeChart({ data }) {
-  if (!data?.loan_types?.length) return (
-    <div style={{ padding: 32, textAlign: 'center', color: C.muted }}>No loan breakdown available.</div>
+  const hasAnyRate = data?.loan_types?.some(lt => lt.own_rate != null || lt.peer_median != null);
+  if (!data?.loan_types?.length || !hasAnyRate) return (
+    <div style={{ padding: 32, textAlign: 'center', color: C.muted }}>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>Per-type breakdown not available</div>
+      <div style={{ fontSize: 12 }}>NCUA 5300 call report data does not include sub-type delinquency balances in a standard field. Total delinquency rate is available on the Summary and Trend tabs.</div>
+    </div>
   );
 
   const { loan_types } = data;

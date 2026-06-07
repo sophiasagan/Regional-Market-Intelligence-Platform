@@ -197,11 +197,10 @@ COLUMN_MAP: dict[str, str] = {
     # 90+ day delinquency bucket (where CUs report it)
     "acct_704c1": "delinq_90day",
 
-    # Charge-offs — ACCT_794 is net charge-offs for Navy Federal ($1.35B plausible for 2024)
+    # Net charge-offs — ACCT_794 confirmed non-zero for large CUs (e.g. Navy Federal $1.35B)
+    # ACCT_750A/748A show 0 in FS220.txt and would override ACCT_794 via combine_first,
+    # so they are intentionally excluded here.
     "acct_794":   "net_charge_offs",
-    "acct_750a":  "net_charge_offs",
-    "acct_748a":  "net_charge_offs",
-    "acct_748":   "net_charge_offs",
 
     # OREO / foreclosed assets
     "acct_716a":  "oreo_balance",

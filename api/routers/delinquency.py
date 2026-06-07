@@ -531,6 +531,8 @@ async def regional(
         if not own:
             raise HTTPException(404, f"No data for period {period}")
 
+        # Use the actual period that data was found in (may differ from requested period)
+        resolved_period = own.get("data_period", period)
         own_state = own.get("state") or ""
         own_charter = own.get("charter_number", "")
 
@@ -546,7 +548,7 @@ async def regional(
                 ORDER BY total_loans DESC
                 LIMIT 60
             """),
-            {"period": period, "state": own_state},
+            {"period": resolved_period, "state": own_state},
         ).mappings().fetchall()
 
     rows = [dict(r) for r in state_rows]
