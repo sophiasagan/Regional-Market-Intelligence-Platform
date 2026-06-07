@@ -202,13 +202,22 @@ export default function MarketMap() {
         },
       });
 
+      // Selected-county fill — amber overlay distinct from blue choropleth
+      map.addLayer({
+        id: 'county-selected-fill',
+        type: 'fill',
+        source: 'counties',
+        filter: ['==', ['id'], ''],
+        paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.30 },
+      });
+
       // Selected-county highlight ring
       map.addLayer({
         id: 'county-selected',
         type: 'line',
         source: 'counties',
-        filter: ['==', ['id'], ''],   // start with nothing selected
-        paint: { 'line-color': '#f59e0b', 'line-width': 3 },
+        filter: ['==', ['id'], ''],
+        paint: { 'line-color': '#d97706', 'line-width': 2.5 },
       });
 
       // State fill — clickable only in state mode (visibility toggled below).
@@ -336,7 +345,9 @@ export default function MarketMap() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mapReady) return;
-    map.setFilter('county-selected', ['==', ['id'], selectedFips ?? '']);
+    const f = ['==', ['id'], selectedFips ?? ''];
+    map.setFilter('county-selected-fill', f);
+    map.setFilter('county-selected', f);
   }, [selectedFips, mapReady]);
 
   // ── Competitor overlay layer visibility ───────────────────────────────────
