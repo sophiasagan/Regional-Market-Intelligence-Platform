@@ -34,7 +34,7 @@ createRoot(document.getElementById('root')).render(
     <ErrorBoundary>
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Navigate to="/market-map" replace />} />
+          <Route path="/" element={<Navigate to="/delinquency" replace />} />
           <Route path="/market-map" element={<MarketMap />} />
           <Route path="/peers" element={<PeerComparison />} />
           <Route path="/query" element={<NLQuery />} />

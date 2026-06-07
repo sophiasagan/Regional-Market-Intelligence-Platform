@@ -106,6 +106,7 @@ export default function MarketMap() {
 
   useEffect(() => {
     if (mapRef.current) return;
+    if (!MAPBOX_TOKEN) return;
     mapboxgl.accessToken = MAPBOX_TOKEN;
 
     const map = new mapboxgl.Map({
