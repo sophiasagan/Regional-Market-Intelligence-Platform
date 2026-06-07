@@ -214,6 +214,7 @@ def _distribution_stats(values: list[float]) -> dict:
         return v[lo] + (v[hi] - v[lo]) * (idx - lo)
 
     return {
+        "n_institutions": len(v),
         "p10": pct(0.10),
         "p25": pct(0.25),
         "median": pct(0.50),
@@ -279,15 +280,17 @@ async def summary(
             "percentile_rank": rank,
         }
 
+    own_state = own.get("state") or ""
     return {
         "institution_name": own.get("institution_name"),
         "charter_number": own.get("charter_number"),
         "period": period,
         "prior_period": prior_period,
-        "state": own.get("state"),
+        "state": own_state,
         "total_loans": _safe_float(own.get("total_loans")),
         "total_assets": _safe_float(own.get("total_assets")),
         "confidence": "measured",
+        "primary_geography": {"type": "state", "id": own_state, "label": f"{own_state} State"},
         "metrics": {
             "delinq_rate_total":    metric_summary("delinq_rate_total"),
             "delinq_90plus_rate":   metric_summary("delinq_90plus_rate"),
@@ -571,4 +574,189 @@ async def regional(
             }
             for r in rows
         ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /delinquency/regional/context
+# ---------------------------------------------------------------------------
+# NOTE: This route must be defined BEFORE /regional to avoid FastAPI treating
+# "context" as a path parameter on the /regional/{something} route pattern.
+# (We use the explicit /regional/context path and it works fine as a sibling
+# of /regional because FastAPI matches exact segments first.)
+@router.get("/regional/context")
+async def regional_context(
+    institution_id: str = Query(default=""),
+    geography_type: str = Query(default="state"),
+    geography_id: str = Query(default=""),
+    period: str = Query(default="2024Q4"),
+):
+    """
+    Regional delinquency context for RegionalContextPanel.
+
+    Returns all credit unions in the same state as the resolved institution,
+    with 3-quarter trend direction, summary statistics, and a rule-based
+    interpretation (regional stress vs institution-specific vs healthy).
+
+    Bank data is not included (no FDIC call report ingested yet) — institution_type
+    is always 'credit_union' and bank_median is always null.
+    """
+    import datetime
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        own = _resolve_institution(conn, institution_id, period)
+        if not own:
+            raise HTTPException(404, f"No data for period {period}")
+
+        resolved_period = own.get("data_period", period)
+        own_state = own.get("state") or ""
+        own_charter = own.get("charter_number", "")
+
+        # Build 3-quarter window for trend calculation
+        p0 = resolved_period
+        p1 = _prior_period(p0)
+        p2 = _prior_period(p1)
+        trend_periods = [p2, p1, p0]
+
+        tp_keys = [f"tp{i}" for i in range(len(trend_periods))]
+        tp_placeholders = ", ".join(f":{k}" for k in tp_keys)
+        tp_params = {k: v for k, v in zip(tp_keys, trend_periods)}
+
+        # Fetch delinquency rates for all state CUs across 3 periods
+        trend_rows = conn.execute(
+            text(f"""
+                SELECT charter_number, institution_name, data_period, delinq_rate_total
+                FROM institutions_quarterly
+                WHERE data_period IN ({tp_placeholders})
+                  AND state = :state
+                  AND delinq_rate_total IS NOT NULL
+                ORDER BY charter_number, data_period
+            """),
+            {**tp_params, "state": own_state},
+        ).mappings().fetchall()
+
+        # Current-period institutions for the base list
+        current_rows = conn.execute(
+            text("""
+                SELECT charter_number, institution_name, total_loans, delinq_rate_total
+                FROM institutions_quarterly
+                WHERE data_period = :period
+                  AND state = :state
+                  AND delinq_rate_total IS NOT NULL
+                ORDER BY total_loans DESC NULLS LAST
+                LIMIT 60
+            """),
+            {"period": resolved_period, "state": own_state},
+        ).mappings().fetchall()
+
+    # Build trend map: charter → {period: rate}
+    trend_map: dict[str, dict[str, Optional[float]]] = {}
+    for r in trend_rows:
+        c = r["charter_number"]
+        if c not in trend_map:
+            trend_map[c] = {}
+        trend_map[c][r["data_period"]] = _safe_float(r["delinq_rate_total"])
+
+    def _trend_direction(charter: str) -> str:
+        rates_by_period = trend_map.get(charter, {})
+        earliest = _safe_float(rates_by_period.get(p2))
+        latest   = _safe_float(rates_by_period.get(p0))
+        if earliest is None or latest is None:
+            return "stable"
+        delta = latest - earliest
+        if delta > 0.001:   # >0.1pp rise
+            return "rising"
+        if delta < -0.001:
+            return "falling"
+        return "stable"
+
+    # Build institution list for response
+    institutions = []
+    for r in current_rows:
+        charter = r["charter_number"]
+        institutions.append({
+            "charter_or_cert": charter,
+            "name": r["institution_name"],
+            "institution_type": "credit_union",
+            "is_own": charter == own_charter,
+            "delinq_rate": _safe_float(r["delinq_rate_total"]),
+            "trend": _trend_direction(charter),
+        })
+
+    # Summary statistics
+    all_rates = [i["delinq_rate"] for i in institutions if i["delinq_rate"] is not None]
+    cu_rates  = [i["delinq_rate"] for i in institutions if i["delinq_rate"] is not None and i["institution_type"] == "credit_union"]
+    stats = _distribution_stats(all_rates)
+    cu_stats = _distribution_stats(cu_rates)
+
+    n_total   = len(institutions)
+    n_rising  = sum(1 for i in institutions if i["trend"] == "rising")
+    own_rate  = next((i["delinq_rate"] for i in institutions if i["is_own"]), None)
+
+    # Own institution's prior rates (3-quarter sparkline)
+    own_prior_rates = [
+        _safe_float((trend_map.get(own_charter) or {}).get(p))
+        for p in trend_periods
+    ]
+    own_prior_rates = [v for v in own_prior_rates if v is not None]
+
+    # Rule-based interpretation
+    majority_rising = n_rising > n_total * 0.5 if n_total > 0 else False
+    own_above_median = own_rate is not None and stats["median"] is not None and own_rate > stats["median"] * 1.3
+    market_rate_elevated = stats["median"] is not None and stats["median"] > 0.015
+
+    if majority_rising and market_rate_elevated:
+        interp_type = "regional_stress"
+        narrative = (
+            f"{n_rising} of {n_total} credit unions in {own_state} show rising delinquency over the past "
+            f"3 quarters, with a market median of {stats['median']*100:.2f}%. "
+            "This pattern is consistent with regional economic headwinds rather than institution-specific credit issues. "
+            "Consider peer benchmarking to distinguish macro-driven from portfolio-management factors."
+        )
+    elif own_above_median and not majority_rising:
+        interp_type = "institution_specific"
+        narrative = (
+            f"Most credit unions in {own_state} show stable delinquency ({stats['median']*100:.2f}% median), "
+            f"but your institution's rate is elevated relative to the regional market. "
+            "This institution-specific pattern warrants a portfolio review — underwriting criteria, "
+            "concentration risk, or collection effectiveness may be contributing factors."
+        )
+    elif not majority_rising and (stats["median"] is None or stats["median"] < 0.01):
+        interp_type = "healthy"
+        median_str = f"{stats['median']*100:.2f}%" if stats["median"] is not None else "—"
+        narrative = (
+            f"Credit union delinquency in {own_state} is broadly healthy. "
+            f"The regional median is {median_str} with only {n_rising} of {n_total} institutions "
+            "showing a rising trend. No widespread regional stress is evident from current NCUA data."
+        )
+    else:
+        interp_type = "mixed"
+        narrative = (
+            f"{n_rising} of {n_total} credit unions in {own_state} are trending upward. "
+            f"Regional median delinquency is {(stats['median'] or 0)*100:.2f}%. "
+            "The picture is mixed — monitor for acceleration over the next 1–2 quarters before drawing conclusions."
+        )
+
+    return {
+        "period": resolved_period,
+        "geography_label": f"{own_state} State",
+        "geography_type": geography_type or "state",
+        "geography_id": geography_id or own_state,
+        "institution_median": stats["median"],
+        "cu_median": cu_stats["median"],
+        "bank_median": None,  # FDIC data not yet ingested
+        "own_rate": own_rate,
+        "own_prior_rates": own_prior_rates,
+        "n_rising_3q": n_rising,
+        "n_total": n_total,
+        "institutions": institutions,
+        "interpretation": {
+            "type": interp_type,
+            "narrative": narrative,
+            "refreshed_at": datetime.datetime.utcnow().isoformat() + "Z",
+        },
+        "economy_signals": {
+            "available": False,
+        },
     }
