@@ -208,7 +208,11 @@ export default function CompetitorTable({
           <LoadingSkeleton />
         ) : displayed.length === 0 ? (
           <div style={s.emptyState}>
-            {geoLabel ? 'No data for this geography and period.' : 'Click a county on the map to see competitive data.'}
+            {!geoLabel
+              ? 'Click a region on the map to see competitive data.'
+              : filter === 'bank' && rows.some(r => r.institution_type === 'credit_union')
+              ? 'Bank deposit data not available for this geography. Switch to Credit Unions or All to see NCUA data.'
+              : 'No data for this geography and period.'}
           </div>
         ) : (
           <table style={s.table}>

@@ -326,6 +326,12 @@ async def market_share(
             # Credit unions are NCUA-insured and absent or incomplete in FDIC data.
             # Merge FDIC bank deposits + NCUA CU deposits for a complete picture.
             rows = _ms_deposits_combined(conn, geography_type, geography_id, period)
+            if not rows:
+                # Last-resort fallback: NCUA-only with estimated confidence.
+                # Ensures we always show something per CLAUDE.md confidence rules.
+                rows = _ms_ncua(conn, geography_type, geography_id, period, metric, institution_types)
+                for r in rows:
+                    r["confidence"] = "estimated"
         else:
             rows = _ms_ncua(conn, geography_type, geography_id, period, metric, institution_types)
 
@@ -390,9 +396,19 @@ def _ms_deposits_combined(conn, geo_type: str, geo_id: str, period: str) -> list
         {"p": ncua_p, **geo_p},
     ).mappings().fetchall()
 
+    has_banks = any(float(r["dep"] or 0) > 0 for r in bank_rows)
+    has_cus   = any(float(r["dep"] or 0) > 0 for r in cu_rows)
+
+    if not has_banks and not has_cus:
+        return []
+
+    # When FDIC bank data is absent for this geography, still show NCUA CU data
+    # with "estimated" confidence (per CLAUDE.md: always display with a confidence badge).
+    cu_conf = "measured" if has_banks else "estimated"
+
     items = (
-        [{"id": r["id"], "name": r["name"], "type": "bank",         "dep": float(r["dep"] or 0), "conf": "measured"} for r in bank_rows] +
-        [{"id": r["id"], "name": r["name"], "type": "credit_union", "dep": float(r["dep"] or 0), "conf": "measured"} for r in cu_rows]
+        [{"id": r["id"], "name": r["name"], "type": "bank",         "dep": float(r["dep"] or 0), "conf": "measured"} for r in bank_rows if float(r["dep"] or 0) > 0] +
+        [{"id": r["id"], "name": r["name"], "type": "credit_union", "dep": float(r["dep"] or 0), "conf": cu_conf}     for r in cu_rows   if float(r["dep"] or 0) > 0]
     )
     total = sum(x["dep"] for x in items)
     if total == 0:
