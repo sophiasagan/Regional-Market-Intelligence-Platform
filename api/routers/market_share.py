@@ -354,62 +354,68 @@ def _ms_deposits_combined(conn, geo_type: str, geo_id: str, period: str) -> list
     unions (CUs are NCUA-insured and largely absent from FDIC SOD).
     Market shares are calculated against the combined deposit total.
     """
-    col      = "total_shares_deposits"
+    col       = "total_shares_deposits"
     fdic_year = int(period)
-    ncua_p   = _resolve_ncua_period(conn, "latest", col)
+    ncua_p    = _resolve_ncua_period(conn, "latest", col)
 
-    # Geography filter — same translation needed for both sources
+    # Geography filters — no table alias, matching _ms_fdic pattern that works
     if geo_type == "state":
         state_abbr = _fips_to_abbr(geo_id)
-        fdic_geo   = "AND b.state = :sa"
-        ncua_geo   = "AND q.state = :sa"
+        fdic_where = "AND state = :sa"
+        ncua_where = "AND state = :sa"
         geo_p: dict = {"sa": state_abbr}
     elif geo_type == "county":
-        fdic_geo   = "AND b.county_fips = :fips"
-        ncua_geo   = "AND q.county_fips = :fips"
+        fdic_where = "AND county_fips = :fips"
+        ncua_where = "AND county_fips = :fips"
         geo_p = {"fips": geo_id}
     else:
-        fdic_geo = ncua_geo = ""
+        fdic_where = ncua_where = ""
         geo_p = {}
 
-    # FDIC: all non-CU institutions (banks, thrifts, NULL file_type).
-    # We exclude credit_union to avoid double-counting with NCUA below.
-    bank_rows = conn.execute(
+    # FDIC: ALL institutions, no type filter in WHERE (same as _ms_fdic which worked).
+    # COALESCE in SELECT labels file_type=NULL rows as 'bank'.
+    fdic_rows = conn.execute(
         text(f"""
-            SELECT cert_number::text AS id, institution_name AS name,
-                   SUM(deposits_thousands) AS dep
-            FROM branches_annual b
-            WHERE year = :yr AND COALESCE(file_type, 'bank') != 'credit_union' {fdic_geo}
-            GROUP BY cert_number, institution_name
+            SELECT cert_number::text AS id,
+                   institution_name  AS name,
+                   COALESCE(file_type, 'bank') AS inst_type,
+                   SUM(deposits_thousands)     AS dep
+            FROM branches_annual
+            WHERE year = :yr {fdic_where}
+            GROUP BY cert_number, institution_name, file_type
         """),
         {"yr": fdic_year, **geo_p},
     ).mappings().fetchall()
 
     # NCUA: credit unions (authoritative source for CU deposits)
-    cu_rows = conn.execute(
+    ncua_rows = conn.execute(
         text(f"""
-            SELECT charter_number::text AS id, institution_name AS name,
-                   {col} AS dep
-            FROM institutions_quarterly q
-            WHERE data_period = :p AND {col} IS NOT NULL AND {col} > 0 {ncua_geo}
+            SELECT charter_number::text AS id,
+                   institution_name    AS name,
+                   {col}              AS dep
+            FROM institutions_quarterly
+            WHERE data_period = :p
+              AND {col} IS NOT NULL AND {col} > 0
+              {ncua_where}
         """),
         {"p": ncua_p, **geo_p},
     ).mappings().fetchall()
 
-    has_banks = any(float(r["dep"] or 0) > 0 for r in bank_rows)
-    has_cus   = any(float(r["dep"] or 0) > 0 for r in cu_rows)
+    items: list[dict] = []
+    for r in fdic_rows:
+        dep = float(r["dep"] or 0)
+        if dep > 0:
+            items.append({"id": r["id"], "name": r["name"],
+                          "type": r["inst_type"], "dep": dep, "conf": "measured"})
 
-    if not has_banks and not has_cus:
-        return []
+    has_banks = any(x["type"] == "bank" for x in items)
 
-    # When FDIC bank data is absent for this geography, still show NCUA CU data
-    # with "estimated" confidence (per CLAUDE.md: always display with a confidence badge).
-    cu_conf = "measured" if has_banks else "estimated"
+    for r in ncua_rows:
+        dep = float(r["dep"] or 0)
+        if dep > 0:
+            items.append({"id": r["id"], "name": r["name"], "type": "credit_union",
+                          "dep": dep, "conf": "measured" if has_banks else "estimated"})
 
-    items = (
-        [{"id": r["id"], "name": r["name"], "type": "bank",         "dep": float(r["dep"] or 0), "conf": "measured"} for r in bank_rows if float(r["dep"] or 0) > 0] +
-        [{"id": r["id"], "name": r["name"], "type": "credit_union", "dep": float(r["dep"] or 0), "conf": cu_conf}     for r in cu_rows   if float(r["dep"] or 0) > 0]
-    )
     total = sum(x["dep"] for x in items)
     if total == 0:
         return []
