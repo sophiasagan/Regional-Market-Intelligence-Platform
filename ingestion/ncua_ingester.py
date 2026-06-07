@@ -270,7 +270,8 @@ def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
         csv_name = _pick_main_csv(zf.namelist())
         logger.debug("Reading %s from ZIP", csv_name)
         with zf.open(csv_name) as fh:
-            raw = pd.read_csv(fh, dtype=str, low_memory=False)
+            sep = "\t" if csv_name.lower().endswith(".txt") else ","
+            raw = pd.read_csv(fh, dtype=str, low_memory=False, sep=sep)
 
     df = _normalize_columns(raw)
     df = _cast_numeric(df)
@@ -290,21 +291,27 @@ def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
 
 def _pick_main_csv(names: list[str]) -> str:
     """
-    NCUA ZIPs typically contain one primary data file plus a README or codebook.
-    Heuristic: pick the largest .csv file (by name length as tie-break).
+    NCUA ZIPs may contain .csv or .txt files depending on the year.
+    Priority: FS220.txt (main 5300 schedule) → any file matching data keywords → first tabular file.
     """
-    csvs = [n for n in names if n.lower().endswith(".csv")]
-    if not csvs:
-        raise ValueError(f"No CSV file found in ZIP. Contents: {names}")
+    # Exact match for the primary 5300 schedule (current NCUA format)
+    for exact in ("FS220.txt", "fs220.txt", "FS220.TXT"):
+        if exact in names:
+            return exact
 
-    # Prefer files whose name contains recognizable data keywords
+    tabular = [n for n in names if n.lower().endswith((".csv", ".txt"))
+               and not any(skip in n.lower() for skip in ("readme", "codebook", "foicu", "atm", "tradename", "acctdesc"))]
+
     data_keywords = ("5300", "call", "data", "fs220")
     for kw in data_keywords:
-        candidates = [c for c in csvs if kw in c.lower()]
+        candidates = [c for c in tabular if kw in c.lower()]
         if candidates:
             return candidates[0]
 
-    return csvs[0]
+    if tabular:
+        return tabular[0]
+
+    raise ValueError(f"No tabular data file found in ZIP. Contents: {names}")
 
 
 def _normalize_columns(raw: pd.DataFrame) -> pd.DataFrame:
