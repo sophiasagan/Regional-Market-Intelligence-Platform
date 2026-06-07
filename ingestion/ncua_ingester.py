@@ -357,33 +357,26 @@ def _pick_main_csv(names: list[str]) -> str:
 
 
 def _normalize_columns(raw: pd.DataFrame) -> pd.DataFrame:
-    """Map raw headers to standard schema names, keeping only mapped columns."""
-    # Build a mapping from the actual headers present
-    mapping = {}
+    """
+    Map raw headers to standard schema names, keeping only mapped columns.
+    When multiple raw columns map to the same target, coalesce to first non-null.
+    """
+    # Build target → [raw_col, ...] mapping
+    target_to_raws: dict[str, list[str]] = {}
     for col in raw.columns:
         key = col.strip().lower().replace(" ", "_")
-        if key in COLUMN_MAP:
-            mapping[col] = COLUMN_MAP[key]
+        target = COLUMN_MAP.get(key)
+        if target:
+            target_to_raws.setdefault(target, []).append(col)
 
-    renamed = raw.rename(columns=mapping)
+    out: dict[str, pd.Series] = {}
+    for target, raw_cols in target_to_raws.items():
+        series = raw[raw_cols[0]]
+        for extra in raw_cols[1:]:
+            series = series.combine_first(raw[extra])
+        out[target] = series
 
-    # Deduplicate: if two raw columns map to the same target, keep the first non-null
-    seen: dict[str, str] = {}
-    drop_cols: list[str] = []
-    for orig_col, std_col in mapping.items():
-        if std_col in seen:
-            merged = renamed[seen[std_col]].combine_first(renamed[std_col])
-            renamed[seen[std_col]] = merged
-            drop_cols.append(std_col)
-        else:
-            seen[std_col] = std_col
-
-    if drop_cols:
-        renamed = renamed.drop(columns=drop_cols, errors="ignore")
-
-    std_cols = list(set(COLUMN_MAP.values()))
-    present = [c for c in std_cols if c in renamed.columns]
-    return renamed[present].copy()
+    return pd.DataFrame(out, index=raw.index)
 
 
 _NUMERIC_COLS = [
