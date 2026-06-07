@@ -559,3 +559,25 @@ def _upsert(df: pd.DataFrame, engine: sa.engine.Engine) -> pd.DataFrame:
         lambda cn: "update" if cn in existing else "insert"
     )
     return df
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
+
+    parser = argparse.ArgumentParser(description="Ingest one quarter of NCUA 5300 data.")
+    parser.add_argument("--year",    type=int, required=True, help="Four-digit year, e.g. 2024")
+    parser.add_argument("--quarter", type=int, required=True, choices=[1, 2, 3, 4])
+    args = parser.parse_args()
+
+    result = ingest_ncua_quarter(year=args.year, quarter=args.quarter)
+    inserted = (result["upsert_action"] == "insert").sum()
+    updated  = (result["upsert_action"] == "update").sum()
+    print(f"Done — {inserted} inserted, {updated} updated.")
+    sys.exit(0)
