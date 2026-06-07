@@ -182,7 +182,15 @@ REQUIRED_COLUMNS = {
     "total_loans",
 }
 
-NCUA_BASE_URL = "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-Q{quarter}.zip"
+# NCUA occasionally changes the path structure between years.
+# Candidates are tried in order; the first 200 response wins.
+_NCUA_URL_TEMPLATES = [
+    "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-Q{quarter}.zip",
+    "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-q{quarter}.zip",
+    "https://www.ncua.gov/files/call-report-data/call-report-data-{year}-Q{quarter}.zip",
+    "https://www.ncua.gov/files/publications/analysis/5300-call-report-data-{year}-Q{quarter}.zip",
+    "https://www.ncua.gov/files/publications/analysis/NCUA5300CallReportData{year}Q{quarter}.zip",
+]
 
 
 def ingest_ncua_quarter(year: int, quarter: int, engine: Optional[sa.engine.Engine] = None) -> pd.DataFrame:
@@ -202,11 +210,9 @@ def ingest_ncua_quarter(year: int, quarter: int, engine: Optional[sa.engine.Engi
     if quarter not in (1, 2, 3, 4):
         raise ValueError(f"quarter must be 1–4, got {quarter}")
 
-    url = NCUA_BASE_URL.format(year=year, quarter=quarter)
     data_period = f"{year}Q{quarter}"
-
-    logger.info("Downloading NCUA 5300 data for %s from %s", data_period, url)
-    raw_zip = _download(url)
+    urls = [t.format(year=year, quarter=quarter) for t in _NCUA_URL_TEMPLATES]
+    raw_zip = _download_with_fallback(urls, data_period)
 
     df = _parse_zip(raw_zip, data_period)
     logger.info("Parsed %d records for %s", len(df), data_period)
@@ -233,6 +239,27 @@ def _download(url: str) -> bytes:
         response = client.get(url)
         response.raise_for_status()
     return response.content
+
+
+def _download_with_fallback(urls: list[str], data_period: str) -> bytes:
+    """Try each URL in order, returning the first successful response."""
+    last_exc: Exception | None = None
+    with httpx.Client(follow_redirects=True, timeout=120) as client:
+        for url in urls:
+            logger.info("Trying %s", url)
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+                logger.info("Downloaded %s (%.1f MB)", data_period, len(response.content) / 1e6)
+                return response.content
+            except httpx.HTTPStatusError as exc:
+                logger.warning("  → %s %s", exc.response.status_code, url)
+                last_exc = exc
+    raise RuntimeError(
+        f"Could not download NCUA data for {data_period} — all URLs returned errors.\n"
+        "Check https://www.ncua.gov/analysis/credit-union-corporate-call-report-data "
+        "for the current download path and update _NCUA_URL_TEMPLATES."
+    ) from last_exc
 
 
 def _parse_zip(raw_zip: bytes, data_period: str) -> pd.DataFrame:
