@@ -77,8 +77,9 @@ export default function MarketMap() {
   const shareDataRef        = useRef({});
   const compDataRef         = useRef({});
   const selectedFipsRef     = useRef(null);
-  // Tracks the raw numeric feature ID of the selected county for setFeatureState
-  const selectedRawIdRef    = useRef(null);
+  // Raw numeric feature IDs for setFeatureState-based highlights
+  const selectedRawIdRef      = useRef(null);   // selected county
+  const selectedStateRawIdRef = useRef(null);   // selected state
 
   // UI state
   const [geoType,        setGeoType]        = useState('county');
@@ -235,9 +236,12 @@ export default function MarketMap() {
         source: 'states',
         layout: { visibility: 'none' },
         paint: {
-          'fill-color': '#2563eb',
+          'fill-color': '#f59e0b',
           'fill-opacity': [
-            'case', ['boolean', ['feature-state', 'hovered'], false], 0.12, 0.04,
+            'case',
+            ['boolean', ['feature-state', 'selected'], false], 0.28,
+            ['boolean', ['feature-state', 'hovered'],  false], 0.12,
+            0.04,
           ],
         },
       });
@@ -291,12 +295,18 @@ export default function MarketMap() {
         const id   = e.features[0].id;
         const fips = normFips(id);
 
-        // Clear previous selection highlight via feature-state
+        // Clear previous county highlight
         if (selectedRawIdRef.current != null) {
           map.setFeatureState({ source: 'counties', id: selectedRawIdRef.current }, { selected: false });
         }
         map.setFeatureState({ source: 'counties', id }, { selected: true });
         selectedRawIdRef.current = id;
+
+        // Clear any state highlight
+        if (selectedStateRawIdRef.current != null) {
+          map.setFeatureState({ source: 'states', id: selectedStateRawIdRef.current }, { selected: false });
+          selectedStateRawIdRef.current = null;
+        }
 
         setSelectedFips(fips);
         setGeoLabel(`County ${fips}`);
@@ -304,9 +314,22 @@ export default function MarketMap() {
 
       // ── Click — state (activated when geoType === 'state') ────────────────
       map.on('click', 'state-fill', (e) => {
-        // State TopoJSON feature IDs are 2-digit FIPS integers (e.g. 39 → "39").
-        // normFips pads to 5 digits so we can't use it here.
-        const stateId = String(e.features[0].id).padStart(2, '0');
+        const id      = e.features[0].id;
+        const stateId = String(id).padStart(2, '0');
+
+        // Highlight selected state
+        if (selectedStateRawIdRef.current != null) {
+          map.setFeatureState({ source: 'states', id: selectedStateRawIdRef.current }, { selected: false });
+        }
+        map.setFeatureState({ source: 'states', id }, { selected: true });
+        selectedStateRawIdRef.current = id;
+
+        // Clear any county selection
+        if (selectedRawIdRef.current != null) {
+          map.setFeatureState({ source: 'counties', id: selectedRawIdRef.current }, { selected: false });
+          selectedRawIdRef.current = null;
+        }
+
         setSelectedFips(stateId);
         setGeoLabel(e.features[0].properties?.name ?? `State ${stateId}`);
       });
@@ -390,6 +413,16 @@ export default function MarketMap() {
     map.setLayoutProperty('county-stroke',   'visibility', isState ? 'none' : 'visible');
     map.setLayoutProperty('county-fill-competitor', 'visibility',
       !isState && selectedComp ? 'visible' : 'none');
+
+    // Clear the opposite selection when switching modes
+    if (isState && selectedRawIdRef.current != null) {
+      map.setFeatureState({ source: 'counties', id: selectedRawIdRef.current }, { selected: false });
+      selectedRawIdRef.current = null;
+    }
+    if (!isState && selectedStateRawIdRef.current != null) {
+      map.setFeatureState({ source: 'states', id: selectedStateRawIdRef.current }, { selected: false });
+      selectedStateRawIdRef.current = null;
+    }
   }, [geoType, mapReady, selectedComp]);
 
   // ── Draw mode ─────────────────────────────────────────────────────────────
