@@ -806,7 +806,7 @@ const L = {
   emptyHero: { textAlign: 'center', padding: '32px 0 28px' },
   emptyIcon: { fontSize: 40, marginBottom: 12 },
   emptyTitle: { margin: '0 0 10px', fontSize: 26, fontWeight: 700, color: '#0f172a' },
-  emptySubtitle: { margin: 0, fontSize: 15, color: '#64748b', maxWidth: 520, margin: '0 auto', lineHeight: 1.6 },
+  emptySubtitle: { fontSize: 15, color: '#64748b', maxWidth: 520, margin: '0 auto', lineHeight: 1.6 },
   exampleGrid: {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 14,
   },
