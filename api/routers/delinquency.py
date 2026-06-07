@@ -134,48 +134,72 @@ def _resolve_institution(conn: sa.Connection, institution_id: str, period: str) 
     return dict(row) if row else {}
 
 
+_PEER_SELECT = """
+    SELECT charter_number, institution_name, state,
+           total_assets, total_loans,
+           delinq_rate_total, delinq_rate_real_estate, delinq_rate_auto,
+           delinq_rate_credit_card, delinq_rate_commercial, delinq_90plus_rate,
+           chargeoff_rate_total, alll_coverage_ratio, alll_to_loans_ratio
+    FROM institutions_quarterly
+"""
+_MIN_PEERS = 8  # minimum useful peer group size
+
+
 def _peer_rows(conn: sa.Connection, own: dict, period: str, peer_type: str = "state") -> list[dict]:
     """
-    Return peer institutions for the given institution.
+    Return peer institutions using a progressive fallback strategy so that
+    very large or very small CUs always get a meaningful peer group.
 
-    peer_type='state'  → same state, total_assets within ±75 % of own
-    peer_type='national' → total_assets within ±50 % of own, any state
-    peer_type='regional' → same state (alias kept for frontend compat)
+    Pass 1: same state + same asset tier (±4x own assets)
+    Pass 2: same state only (no asset filter)
+    Pass 3: national + same asset tier
+    Pass 4: national, no filter (full dataset)
     """
     own_assets = _safe_float(own.get("total_assets")) or 0
     own_state = own.get("state") or ""
+    own_charter = own.get("charter_number", "")
 
+    lo = own_assets * 0.25 if own_assets > 0 else 0
+    hi = own_assets * 4.0  if own_assets > 0 else 1e15
+
+    def _fetch(where: str, params: dict) -> list[dict]:
+        rows = conn.execute(
+            text(f"{_PEER_SELECT} WHERE {where} ORDER BY total_assets DESC LIMIT 200"),
+            params,
+        ).mappings().fetchall()
+        return [dict(r) for r in rows]
+
+    use_national = peer_type not in ("state", "regional")
+
+    if not use_national:
+        # Pass 1: state + asset tier
+        rows = _fetch(
+            "data_period = :period AND state = :state AND total_assets BETWEEN :lo AND :hi",
+            {"period": period, "state": own_state, "lo": lo, "hi": hi},
+        )
+        if len(rows) >= _MIN_PEERS:
+            return rows
+
+        # Pass 2: state only
+        rows = _fetch(
+            "data_period = :period AND state = :state",
+            {"period": period, "state": own_state},
+        )
+        if len(rows) >= _MIN_PEERS:
+            return rows
+
+    # Pass 3: national + asset tier
     if own_assets > 0:
-        lo = own_assets * 0.25
-        hi = own_assets * 4.0
-        asset_filter = "AND total_assets BETWEEN :lo AND :hi"
-        asset_params: dict = {"lo": lo, "hi": hi}
-    else:
-        asset_filter = ""
-        asset_params = {}
+        rows = _fetch(
+            "data_period = :period AND total_assets BETWEEN :lo AND :hi",
+            {"period": period, "lo": lo, "hi": hi},
+        )
+        if len(rows) >= _MIN_PEERS:
+            return rows
 
-    if peer_type in ("state", "regional"):
-        where = "WHERE data_period = :period AND state = :state " + asset_filter
-        params = {"period": period, "state": own_state, **asset_params}
-    else:
-        where = "WHERE data_period = :period " + asset_filter
-        params = {"period": period, **asset_params}
-
-    rows = conn.execute(
-        text(f"""
-            SELECT charter_number, institution_name, state,
-                   total_assets, total_loans,
-                   delinq_rate_total, delinq_rate_real_estate, delinq_rate_auto,
-                   delinq_rate_credit_card, delinq_rate_commercial, delinq_90plus_rate,
-                   chargeoff_rate_total, alll_coverage_ratio, alll_to_loans_ratio
-            FROM institutions_quarterly
-            {where}
-            ORDER BY total_assets DESC
-            LIMIT 200
-        """),
-        params,
-    ).mappings().fetchall()
-    return [dict(r) for r in rows]
+    # Pass 4: full national dataset
+    rows = _fetch("data_period = :period", {"period": period})
+    return rows
 
 
 def _distribution_stats(values: list[float]) -> dict:
@@ -229,9 +253,21 @@ async def summary(
 
     def metric_summary(key: str, is_coverage: bool = False) -> dict:
         own_val = _safe_float(own.get(key))
+        # CECL institutions report no ALLL — show null rather than misleading 0.00x
+        if is_coverage and own_val == 0.0 and _safe_float(own.get("alll")) == 0.0:
+            own_val = None
         prior_val = _safe_float(prior.get(key)) if prior else None
+        if is_coverage and prior_val == 0.0 and _safe_float((prior or {}).get("alll")) == 0.0:
+            prior_val = None
         peer_vals = [_safe_float(p.get(key)) for p in peers]
-        peer_vals = [v for v in peer_vals if v is not None]
+        # Exclude CECL peers (alll=0) from coverage distribution
+        if is_coverage:
+            peer_vals = [
+                v for v, p in zip(peer_vals, peers)
+                if v is not None and v > 0 and (_safe_float(p.get("alll")) or 0) > 0
+            ]
+        else:
+            peer_vals = [v for v in peer_vals if v is not None]
         stats = _distribution_stats(peer_vals)
         rank = _percentile_rank(own_val, peer_vals)
         return {
