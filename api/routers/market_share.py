@@ -1,0 +1,429 @@
+"""
+Market share endpoints.
+
+Data sources (in priority order):
+  1. branches_annual (FDIC SOD) — branch-level deposit data, precise county geography
+  2. institutions_quarterly (NCUA 5300) — institution-level, uses HQ county_fips
+
+While branches_annual is empty the endpoints fall back to institutions_quarterly
+using each institution's HQ county.  Accuracy note shown in confidence field.
+
+Endpoints:
+  GET /market-share/periods          → available period strings
+  GET /market-share/county-map       → {fips5: share} for choropleth
+  GET /market-share                  → ranked institution list for a geography
+"""
+from __future__ import annotations
+
+import math
+from typing import Any, Optional
+
+from fastapi import APIRouter, Query
+from sqlalchemy import text
+
+from database import get_engine
+
+router = APIRouter(prefix="/market-share", tags=["market-share"])
+
+# ---------------------------------------------------------------------------
+# Metric → column mappings
+# ---------------------------------------------------------------------------
+_IQ_METRICS: dict[str, str] = {
+    "deposits":             "total_shares_deposits",
+    "loans":                "total_loans",
+    "members":              "member_count",
+    "mortgage_originations":"loans_real_estate",
+}
+
+_BA_METRIC = "deposits_thousands"   # branches_annual only has deposits
+
+
+def _safe(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        f = float(v)
+        return None if (math.isnan(f) or math.isinf(f) or f < 0) else f
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# GET /market-share/periods
+# ---------------------------------------------------------------------------
+@router.get("/periods")
+async def periods(metric: str = Query(default="deposits")):
+    """
+    Return available periods.
+    FDIC SOD years (e.g. '2024') from branches_annual if populated;
+    NCUA quarters (e.g. '2024Q4') from institutions_quarterly always.
+    """
+    engine = get_engine()
+    with engine.connect() as conn:
+        # NCUA quarters
+        ncua_rows = conn.execute(
+            text("SELECT DISTINCT data_period FROM institutions_quarterly ORDER BY data_period DESC LIMIT 20")
+        ).fetchall()
+        ncua_periods = [r[0] for r in ncua_rows if r[0]]
+
+        # FDIC years (only if branches_annual has data)
+        fdic_rows = conn.execute(
+            text("SELECT DISTINCT year::text FROM branches_annual ORDER BY year DESC LIMIT 10")
+        ).fetchall()
+        fdic_periods = [r[0] for r in fdic_rows if r[0]]
+
+    # Prefer FDIC for deposits; NCUA for everything else
+    if metric == "deposits" and fdic_periods:
+        return fdic_periods
+    return ncua_periods if ncua_periods else fdic_periods
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _has_fdic_data(conn) -> bool:
+    row = conn.execute(text("SELECT 1 FROM branches_annual LIMIT 1")).fetchone()
+    return row is not None
+
+
+def _period_is_annual(period: str) -> bool:
+    """'2023' → True (FDIC annual).  '2024Q4' → False (NCUA quarterly)."""
+    return len(period) == 4 and period.isdigit()
+
+
+def _ncua_col(metric: str) -> str:
+    return _IQ_METRICS.get(metric, "total_loans")
+
+
+# ---------------------------------------------------------------------------
+# GET /market-share/county-map
+# ---------------------------------------------------------------------------
+@router.get("/county-map")
+async def county_map(
+    period: str = Query(default="2024Q4"),
+    metric: str = Query(default="deposits"),
+    institution_types: str = Query(default="all"),
+    institution_id: str = Query(default=""),
+):
+    """
+    Returns {fips5: share} for the choropleth.
+
+    'share' is the fraction (0-1) of the target institution's metric in each
+    geography.  When institution_id is blank, uses the largest institution in
+    the period.
+
+    Source priority:
+      FDIC branches_annual when available (deposits only, annual period)
+      NCUA institutions_quarterly otherwise (HQ county, may under-count multi-branch CUs)
+    """
+    engine = get_engine()
+    with engine.connect() as conn:
+        use_fdic = _has_fdic_data(conn) and metric == "deposits" and _period_is_annual(period)
+
+        if use_fdic:
+            result = _county_map_fdic(conn, period, institution_id)
+        else:
+            result = _county_map_ncua(conn, period, metric, institution_id, institution_types)
+
+    return result
+
+
+def _county_map_fdic(conn, period: str, institution_id: str) -> dict:
+    year = int(period)
+
+    # Resolve institution cert from institution_id (charter → cert via crosswalk)
+    cert = None
+    if institution_id:
+        row = conn.execute(
+            text("""
+                SELECT cert_number FROM fdic_ncua_crosswalk
+                WHERE charter_number = :cid LIMIT 1
+            """),
+            {"cid": institution_id},
+        ).fetchone()
+        if row:
+            cert = row[0]
+
+    if not cert:
+        # Largest institution in branches_annual for this year
+        row = conn.execute(
+            text("""
+                SELECT cert_number FROM branches_annual
+                WHERE year = :yr
+                GROUP BY cert_number
+                ORDER BY SUM(deposits_thousands) DESC NULLS LAST
+                LIMIT 1
+            """),
+            {"yr": year},
+        ).fetchone()
+        cert = row[0] if row else None
+
+    if not cert:
+        return {}
+
+    # Own deposits by county
+    own_rows = conn.execute(
+        text("""
+            SELECT county_fips, SUM(deposits_thousands) AS dep
+            FROM branches_annual
+            WHERE year = :yr AND cert_number = :cert AND county_fips IS NOT NULL
+            GROUP BY county_fips
+        """),
+        {"yr": year, "cert": cert},
+    ).fetchall()
+
+    # Total deposits by county
+    total_rows = conn.execute(
+        text("""
+            SELECT county_fips, SUM(deposits_thousands) AS dep
+            FROM branches_annual
+            WHERE year = :yr AND county_fips IS NOT NULL
+            GROUP BY county_fips
+        """),
+        {"yr": year},
+    ).fetchall()
+
+    totals = {r[0]: float(r[1]) for r in total_rows if r[1]}
+    result = {}
+    for r in own_rows:
+        fips = r[0]
+        own = float(r[1]) if r[1] else 0
+        tot = totals.get(fips, 0)
+        if tot > 0:
+            result[fips] = own / tot
+    return result
+
+
+def _county_map_ncua(conn, period: str, metric: str, institution_id: str, institution_types: str) -> dict:
+    col = _ncua_col(metric)
+
+    # Resolve institution
+    if institution_id:
+        own_row = conn.execute(
+            text(f"""
+                SELECT charter_number, county_fips, {col}
+                FROM institutions_quarterly
+                WHERE charter_number = :id AND data_period = :p
+                LIMIT 1
+            """),
+            {"id": institution_id, "p": period},
+        ).mappings().fetchone()
+    else:
+        own_row = None
+
+    if not own_row:
+        # largest institution in period
+        own_row = conn.execute(
+            text(f"""
+                SELECT charter_number, county_fips, {col}
+                FROM institutions_quarterly
+                WHERE data_period = :p AND {col} IS NOT NULL
+                ORDER BY {col} DESC LIMIT 1
+            """),
+            {"p": period},
+        ).mappings().fetchone()
+
+    if not own_row:
+        return {}
+
+    own_charter = own_row["charter_number"]
+
+    # Total metric by county across all institutions
+    type_filter = ""
+    if institution_types == "credit_unions":
+        type_filter = ""  # all IQ rows are CUs
+    # (banks in IQ is not applicable — IQ is NCUA only)
+
+    totals_rows = conn.execute(
+        text(f"""
+            SELECT county_fips, SUM({col}) AS total
+            FROM institutions_quarterly
+            WHERE data_period = :p AND county_fips IS NOT NULL AND {col} IS NOT NULL
+            GROUP BY county_fips
+        """),
+        {"p": period},
+    ).fetchall()
+    totals = {r[0]: float(r[1]) for r in totals_rows if r[1]}
+
+    # Own institution's metric by county (only HQ county known without FDIC)
+    own_fips = own_row.get("county_fips")
+    own_val  = _safe(own_row.get(col))
+
+    result = {}
+    if own_fips and own_val and own_fips in totals and totals[own_fips] > 0:
+        result[own_fips] = own_val / totals[own_fips]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# GET /market-share
+# ---------------------------------------------------------------------------
+@router.get("")
+async def market_share(
+    geography_type: str = Query(default="county"),
+    geography_id: str   = Query(default=""),
+    period: str         = Query(default="2024Q4"),
+    metric: str         = Query(default="deposits"),
+    institution_types: str = Query(default="all"),
+    institution_id: str = Query(default=""),
+):
+    """
+    Ranked institution list for a selected geography.
+
+    Returns rows with: charter_or_cert, institution_name, institution_type,
+    market_share, share_change_prior_period, value, confidence.
+    """
+    engine = get_engine()
+    with engine.connect() as conn:
+        use_fdic = (
+            _has_fdic_data(conn)
+            and metric == "deposits"
+            and _period_is_annual(period)
+            and geography_type in ("county", "state")
+        )
+
+        if use_fdic:
+            rows = _ms_fdic(conn, geography_type, geography_id, period, institution_types)
+        else:
+            rows = _ms_ncua(conn, geography_type, geography_id, period, metric, institution_types)
+
+    return rows
+
+
+def _prior_period_ncua(period: str) -> str:
+    try:
+        year, q = int(period[:4]), int(period[5])
+        return f"{year - 1}Q4" if q == 1 else f"{year}Q{q - 1}"
+    except Exception:
+        return period
+
+
+def _ms_fdic(conn, geo_type: str, geo_id: str, period: str, institution_types: str) -> list[dict]:
+    year = int(period)
+    prior_year = year - 1
+
+    type_filter = ""
+    if institution_types == "credit_unions":
+        type_filter = "AND file_type = 'credit_union'"
+    elif institution_types == "banks":
+        type_filter = "AND file_type = 'bank'"
+
+    if geo_type == "county":
+        geo_filter = "AND county_fips = :geo_id"
+    elif geo_type == "state":
+        geo_filter = "AND state = :geo_id"
+    else:
+        geo_filter = ""
+
+    params: dict = {"yr": year, "pyr": prior_year, "geo_id": geo_id}
+
+    rows = conn.execute(
+        text(f"""
+            WITH cur AS (
+                SELECT cert_number, institution_name, file_type,
+                       SUM(deposits_thousands) AS dep
+                FROM branches_annual
+                WHERE year = :yr {geo_filter} {type_filter}
+                GROUP BY cert_number, institution_name, file_type
+            ),
+            prior AS (
+                SELECT cert_number, SUM(deposits_thousands) AS dep
+                FROM branches_annual
+                WHERE year = :pyr {geo_filter}
+                GROUP BY cert_number
+            ),
+            totals AS (SELECT SUM(dep) AS total FROM cur)
+            SELECT c.cert_number, c.institution_name, c.file_type,
+                   c.dep, p.dep AS prior_dep,
+                   t.total
+            FROM cur c
+            CROSS JOIN totals t
+            LEFT JOIN prior p ON p.cert_number = c.cert_number
+            WHERE t.total > 0
+            ORDER BY c.dep DESC NULLS LAST
+            LIMIT 50
+        """),
+        params,
+    ).mappings().fetchall()
+
+    result = []
+    for r in rows:
+        total   = float(r["total"]) or 1
+        dep     = float(r["dep"] or 0)
+        pdep    = float(r["prior_dep"] or 0)
+        share   = dep / total
+        pshare  = pdep / total if pdep and total else None
+        change  = (share - pshare) if pshare is not None else None
+        result.append({
+            "charter_or_cert":         str(r["cert_number"]),
+            "institution_name":        r["institution_name"],
+            "institution_type":        r["file_type"] or "bank",
+            "market_share":            share,
+            "value":                   dep,
+            "share_change_prior_period": change,
+            "confidence":              "measured",
+        })
+    return result
+
+
+def _ms_ncua(conn, geo_type: str, geo_id: str, period: str, metric: str, institution_types: str) -> list[dict]:
+    col        = _ncua_col(metric)
+    prior_p    = _prior_period_ncua(period)
+
+    if geo_type == "county":
+        geo_filter = "AND county_fips = :geo_id"
+    elif geo_type == "state":
+        geo_filter = "AND state = :geo_id"
+    else:
+        geo_filter = "AND state IS NOT NULL"  # national: all
+
+    params: dict = {"p": period, "pp": prior_p, "geo_id": geo_id}
+
+    rows = conn.execute(
+        text(f"""
+            WITH cur AS (
+                SELECT charter_number, institution_name,
+                       {col} AS val
+                FROM institutions_quarterly
+                WHERE data_period = :p {geo_filter}
+                  AND {col} IS NOT NULL AND {col} > 0
+            ),
+            prior AS (
+                SELECT charter_number, {col} AS val
+                FROM institutions_quarterly
+                WHERE data_period = :pp {geo_filter}
+                  AND {col} IS NOT NULL
+            ),
+            totals AS (SELECT SUM(val) AS total FROM cur)
+            SELECT c.charter_number, c.institution_name,
+                   c.val, p.val AS prior_val, t.total
+            FROM cur c
+            CROSS JOIN totals t
+            LEFT JOIN prior p ON p.charter_number = c.charter_number
+            WHERE t.total > 0
+            ORDER BY c.val DESC NULLS LAST
+            LIMIT 50
+        """),
+        params,
+    ).mappings().fetchall()
+
+    result = []
+    for r in rows:
+        total  = float(r["total"]) or 1
+        val    = float(r["val"] or 0)
+        pval   = float(r["prior_val"] or 0)
+        share  = val / total
+        pshare = pval / total if pval and total else None
+        change = (share - pshare) if pshare is not None else None
+        result.append({
+            "charter_or_cert":           r["charter_number"],
+            "institution_name":          r["institution_name"],
+            "institution_type":          "credit_union",
+            "market_share":              share,
+            "value":                     val,
+            "share_change_prior_period": change,
+            "confidence":                "modeled" if geo_type == "county" else "measured",
+        })
+    return result
