@@ -473,13 +473,14 @@ _RATE_PAIRS: list[tuple[str, str, str]] = [
 
 
 def _safe_div(df: pd.DataFrame, num_col: str, denom_col: str) -> pd.Series:
-    """Divide two columns, returning NaN wherever the denominator is zero or absent."""
-    nan = pd.Series(float("nan"), index=df.index)
+    """Divide two columns. Returns NULL when denominator is zero or absent."""
+    null = pd.Series(pd.NA, index=df.index, dtype="Float64")
     if num_col not in df.columns or denom_col not in df.columns:
-        return nan
+        return null
     num   = pd.to_numeric(df[num_col],   errors="coerce")
     denom = pd.to_numeric(df[denom_col], errors="coerce")
-    return num / denom.where(denom > 0)
+    # Where denom is zero or null, result is NULL (not NaN or infinity)
+    return (num / denom.where(denom > 0)).where(denom > 0, other=pd.NA)
 
 
 def _compute_derived_rates(df: pd.DataFrame) -> pd.DataFrame:
