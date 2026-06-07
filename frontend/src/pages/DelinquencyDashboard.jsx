@@ -55,7 +55,7 @@ const LOAN_TYPES = [
   { key: 'student',     label: 'Student' },
 ];
 
-const TABS = ['Trend Analysis', 'Peer Distribution', 'Loan Type Breakdown', 'Regional Context'];
+const TABS = ['Trend Analysis', 'Peer Distribution', 'Portfolio Composition', 'Regional Context'];
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 const fmtRate = (v) => (v == null || isNaN(v)) ? '—' : `${(v * 100).toFixed(2)}%`;
@@ -425,82 +425,108 @@ function PeerTable({ peers, anonymize }) {
   );
 }
 
-// ── LoanTypeChart (grouped bars) ──────────────────────────────────────────────
+// ── LoanTypeChart (portfolio composition) ─────────────────────────────────────
+// Shows % of total loans by category vs peer median.
+// Per-type delinquency is not available in NCUA 5300 bulk data.
 function LoanTypeChart({ data }) {
-  const hasAnyRate = data?.loan_types?.some(lt => lt.own_rate != null || lt.peer_median != null);
-  if (!data?.loan_types?.length || !hasAnyRate) return (
+  const hasData = data?.loan_types?.some(lt => lt.own_share != null);
+  if (!data?.loan_types?.length || !hasData) return (
     <div style={{ padding: 32, textAlign: 'center', color: C.muted }}>
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>Per-type breakdown not available</div>
-      <div style={{ fontSize: 12 }}>NCUA 5300 does not report delinquency broken out by loan type in a standard machine-readable field. Your total delinquency rate is shown in the KPI cards at the top of this page, and 8-quarter history is on the Trend Analysis tab.</div>
+      <div style={{ fontWeight: 600, marginBottom: 6 }}>No portfolio data available</div>
+      <div style={{ fontSize: 12 }}>Loan balance data could not be loaded for this period.</div>
     </div>
   );
 
+  const fmtShare = (v) => (v == null || isNaN(v)) ? '—' : `${(v * 100).toFixed(1)}%`;
+
   const { loan_types } = data;
-  const BAR_W   = 18;
-  const GAP     = 6;      // gap between own / peer bars in a group
-  const GROUP   = 28;     // gap between groups
+  const BAR_W   = 22;
+  const GAP     = 6;
+  const GROUP   = 32;
   const GROUP_W = BAR_W * 2 + GAP;
-  const PAD     = { top: 28, right: 20, bottom: 52, left: 54 };
-  const H       = 224;
+  const PAD     = { top: 32, right: 20, bottom: 56, left: 54 };
+  const H       = 240;
   const totalW  = PAD.left + loan_types.length * (GROUP_W + GROUP) + PAD.right;
   const cH      = H - PAD.top - PAD.bottom;
-  const maxV    = (Math.max(...loan_types.flatMap(lt => [lt.own_rate ?? 0, lt.peer_median ?? 0])) || 0.05) * 1.2;
-  const yS      = (v) => PAD.top + cH - (v / maxV) * cH;
-  const yTick   = Array.from({ length: 5 }, (_, i) => (i / 4) * maxV);
+  const maxV    = Math.max(
+    ...loan_types.flatMap(lt => [lt.own_share ?? 0, lt.peer_median ?? 0]),
+    0.05
+  ) * 1.15;
+  const yS    = (v) => PAD.top + cH - (v / maxV) * cH;
+  const yTick = Array.from({ length: 5 }, (_, i) => (i / 4) * maxV);
 
   return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg width={totalW} height={H} style={{ display: 'block' }}>
-        {/* Y grid */}
-        {yTick.map((v, i) => (
-          <g key={i}>
-            <line x1={PAD.left} x2={totalW - PAD.right} y1={yS(v)} y2={yS(v)} stroke="#e8edf2" strokeWidth={1} />
-            <text x={PAD.left - 7} y={yS(v)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill={C.muted}>
-              {fmtRate(v)}
-            </text>
-          </g>
-        ))}
+    <div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>Loan Portfolio Composition</div>
+        <div style={{ fontSize: 12, color: C.muted }}>
+          Share of total loans by category — your institution vs peer median.
+          Overweight in a category means higher concentration if that segment faces stress.
+        </div>
+      </div>
 
-        {loan_types.map((lt, i) => {
-          const gx      = PAD.left + i * (GROUP_W + GROUP);
-          const abovePeer = lt.own_rate != null && lt.peer_median != null && lt.own_rate > lt.peer_median;
-          const ownColor  = abovePeer ? C.coral : C.green;
-          const ownH      = lt.own_rate != null ? (lt.own_rate / maxV) * cH : 0;
-          const medH      = lt.peer_median != null ? (lt.peer_median / maxV) * cH : 0;
-
-          return (
-            <g key={lt.key ?? i}>
-              {/* Own bar */}
-              {lt.own_rate != null && (
-                <>
-                  <rect x={gx} y={yS(lt.own_rate)} width={BAR_W} height={ownH} fill={ownColor} rx={2} />
-                  <text x={gx + BAR_W / 2} y={yS(lt.own_rate) - 4} textAnchor="middle" fontSize={8.5} fill={ownColor} fontWeight={700}>
-                    {fmtRate(lt.own_rate)}
-                  </text>
-                </>
-              )}
-
-              {/* Peer median bar (outline) */}
-              {lt.peer_median != null && (
-                <rect x={gx + BAR_W + GAP} y={yS(lt.peer_median)} width={BAR_W} height={medH} fill="none" stroke={C.median} strokeWidth={1.5} rx={2} />
-              )}
-
-              {/* Group label */}
-              <text x={gx + GROUP_W / 2} y={H - PAD.bottom + 14} textAnchor="middle" fontSize={10} fill={C.muted}>
-                {lt.label}
+      <div style={{ overflowX: 'auto' }}>
+        <svg width={totalW} height={H} style={{ display: 'block' }}>
+          {yTick.map((v, i) => (
+            <g key={i}>
+              <line x1={PAD.left} x2={totalW - PAD.right} y1={yS(v)} y2={yS(v)} stroke="#e8edf2" strokeWidth={1} />
+              <text x={PAD.left - 7} y={yS(v)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill={C.muted}>
+                {fmtShare(v)}
               </text>
             </g>
-          );
-        })}
-      </svg>
+          ))}
 
-      <div style={{ display: 'flex', gap: 20, marginTop: 4, paddingLeft: PAD.left, fontSize: 11, color: C.muted, flexWrap: 'wrap' }}>
-        <LegendItem color={C.green}  solid label="Your rate — below peer median" />
-        <LegendItem color={C.coral}  solid label="Your rate — above peer median" />
-        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-          <span style={{ display: 'inline-block', width: BAR_W, height: 10, border: `1.5px solid ${C.median}`, borderRadius: 2, marginRight: 5 }} />
-          Peer median
-        </span>
+          {loan_types.map((lt, i) => {
+            const gx         = PAD.left + i * (GROUP_W + GROUP);
+            const overweight = lt.own_share != null && lt.peer_median != null && lt.own_share > lt.peer_median * 1.2;
+            const ownColor   = overweight ? C.amber : C.brand;
+            const ownH       = lt.own_share != null ? (lt.own_share / maxV) * cH : 0;
+            const medH       = lt.peer_median != null ? (lt.peer_median / maxV) * cH : 0;
+
+            return (
+              <g key={lt.key ?? i}>
+                {lt.own_share != null && (
+                  <>
+                    <rect x={gx} y={yS(lt.own_share)} width={BAR_W} height={ownH} fill={ownColor} rx={2} opacity={0.9} />
+                    <text x={gx + BAR_W / 2} y={yS(lt.own_share) - 4} textAnchor="middle" fontSize={8.5} fill={ownColor} fontWeight={700}>
+                      {fmtShare(lt.own_share)}
+                    </text>
+                  </>
+                )}
+                {lt.peer_median != null && (
+                  <>
+                    <rect x={gx + BAR_W + GAP} y={yS(lt.peer_median)} width={BAR_W} height={medH}
+                      fill={C.band} stroke={C.median} strokeWidth={1.5} rx={2} />
+                    <text x={gx + BAR_W + GAP + BAR_W / 2} y={yS(lt.peer_median) - 4} textAnchor="middle" fontSize={8} fill={C.muted}>
+                      {fmtShare(lt.peer_median)}
+                    </text>
+                  </>
+                )}
+                <text x={gx + GROUP_W / 2} y={H - PAD.bottom + 14} textAnchor="middle" fontSize={10} fill={C.muted}>
+                  {lt.label}
+                </text>
+                {overweight && (
+                  <text x={gx + GROUP_W / 2} y={H - PAD.bottom + 26} textAnchor="middle" fontSize={9} fill={C.amber} fontWeight={600}>
+                    ▲ overweight
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+
+        <div style={{ display: 'flex', gap: 20, marginTop: 4, paddingLeft: PAD.left, fontSize: 11, color: C.muted, flexWrap: 'wrap' }}>
+          <LegendItem color={C.brand} solid label="Your institution" />
+          <LegendItem color={C.amber} solid label="Overweight vs peers (>120% of peer median)" />
+          <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+            <span style={{ display: 'inline-block', width: BAR_W, height: 10, background: C.band, border: `1.5px solid ${C.median}`, borderRadius: 2, marginRight: 5 }} />
+            Peer median
+          </span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16, fontSize: 11, color: C.muted, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+        Source: NCUA 5300 Call Report · Loan balances as reported · Per-type delinquency rates are not available in NCUA bulk data.
       </div>
     </div>
   );
@@ -809,15 +835,9 @@ export default function DelinquencyDashboard() {
             </div>
           )}
 
-          {/* Tab 2: Loan Type Breakdown */}
+          {/* Tab 2: Portfolio Composition */}
           {activeTab === 2 && (
             <div>
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>Delinquency by Loan Type</div>
-                <div style={{ fontSize: 12, color: C.muted }}>
-                  Which category is driving your relative performance vs peers?
-                </div>
-              </div>
               {loading.loan
                 ? <div style={{ height: 224, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.muted }}>Loading…</div>
                 : errors.loan

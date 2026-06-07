@@ -482,6 +482,8 @@ async def peer_distribution(
 
 # ---------------------------------------------------------------------------
 # GET /delinquency/loan-breakdown
+# Returns loan portfolio composition (share of total loans by type).
+# Per-type delinquency rates are not available in NCUA 5300 bulk data.
 # ---------------------------------------------------------------------------
 @router.get("/loan-breakdown")
 async def loan_breakdown(
@@ -491,32 +493,69 @@ async def loan_breakdown(
     engine = get_engine()
     with engine.connect() as conn:
         own = _resolve_institution(conn, institution_id, period)
-        peers = _peer_rows(conn, own, period)
+        resolved_period = own.get("data_period", period)
+        peers = _peer_rows(conn, own, resolved_period)
 
+    # Loan balance columns → (key, display label)
     loan_type_map = [
-        ("real_estate", "Real Estate",  "delinq_rate_real_estate"),
-        ("auto",        "Auto",         "delinq_rate_auto"),
-        ("credit_card", "Credit Card",  "delinq_rate_credit_card"),
-        ("commercial",  "Commercial",   "delinq_rate_commercial"),
+        ("real_estate", "Real Estate",  "loans_real_estate"),
+        ("auto",        "Auto",         "loans_auto"),
+        ("credit_card", "Credit Card",  "loans_credit_card"),
+        ("commercial",  "Commercial",   "loans_commercial"),
     ]
 
+    own_total = _safe_float(own.get("total_loans")) or 0
+
+    def _share(loans_val: Optional[float], total: float) -> Optional[float]:
+        if loans_val is None or total <= 0:
+            return None
+        return loans_val / total
+
     result = []
-    for key, label, rate_col in loan_type_map:
-        own_rate = _safe_float(own.get(rate_col))
-        peer_rates = [_safe_float(p.get(rate_col)) for p in peers]
-        peer_rates_clean = [v for v in peer_rates if v is not None and v > 0]
-        stats = _distribution_stats(peer_rates_clean)
+    for key, label, balance_col in loan_type_map:
+        own_bal   = _safe_float(own.get(balance_col))
+        own_share = _share(own_bal, own_total)
+
+        peer_shares = []
+        for p in peers:
+            ptotal = _safe_float(p.get("total_loans")) or 0
+            pbal   = _safe_float(p.get(balance_col))
+            s = _share(pbal, ptotal)
+            if s is not None and 0 < s < 1:
+                peer_shares.append(s)
+
+        stats = _distribution_stats(peer_shares)
         result.append({
-            "key": key,
-            "label": label,
-            "own_rate": own_rate,
+            "key":         key,
+            "label":       label,
+            "own_share":   own_share,
+            "own_balance": own_bal,
             "peer_median": stats["median"],
-            "peer_p25": stats["p25"],
-            "peer_p75": stats["p75"],
+            "peer_p25":    stats["p25"],
+            "peer_p75":    stats["p75"],
+        })
+
+    # Compute "other" as the residual
+    known_total = sum(
+        (_safe_float(own.get(col)) or 0)
+        for _, _, col in loan_type_map
+    )
+    other_bal   = own_total - known_total if own_total > 0 else None
+    other_share = _share(other_bal, own_total) if other_bal is not None and other_bal > 0 else None
+    if other_share and other_share > 0.01:  # only show if >1% of portfolio
+        result.append({
+            "key":         "other",
+            "label":       "Other",
+            "own_share":   other_share,
+            "own_balance": other_bal,
+            "peer_median": None,
+            "peer_p25":    None,
+            "peer_p75":    None,
         })
 
     return {
-        "period": period,
+        "period": resolved_period,
+        "data_type": "portfolio_composition",
         "institution_name": own.get("institution_name"),
         "loan_types": result,
     }
