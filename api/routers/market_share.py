@@ -349,12 +349,14 @@ def _ms_fdic(conn, geo_type: str, geo_id: str, period: str, institution_types: s
 
     if geo_type == "county":
         geo_filter = "AND county_fips = :geo_id"
+        params: dict = {"yr": year, "pyr": prior_year, "geo_id": geo_id}
     elif geo_type == "state":
-        geo_filter = "AND state = :geo_id"
+        state_abbr = _fips_to_abbr(geo_id)
+        geo_filter = "AND state = :state_abbr"
+        params = {"yr": year, "pyr": prior_year, "state_abbr": state_abbr}
     else:
         geo_filter = ""
-
-    params: dict = {"yr": year, "pyr": prior_year, "geo_id": geo_id}
+        params = {"yr": year, "pyr": prior_year}
 
     rows = conn.execute(
         text(f"""
