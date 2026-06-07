@@ -366,13 +366,14 @@ def _ms_deposits_combined(conn, geo_type: str, geo_id: str, period: str) -> list
         fdic_geo = ncua_geo = ""
         geo_p = {}
 
-    # FDIC: banks only (skip CU entries — data is incomplete)
+    # FDIC: all non-CU institutions (banks, thrifts, NULL file_type).
+    # We exclude credit_union to avoid double-counting with NCUA below.
     bank_rows = conn.execute(
         text(f"""
             SELECT cert_number::text AS id, institution_name AS name,
                    SUM(deposits_thousands) AS dep
             FROM branches_annual b
-            WHERE year = :yr AND file_type = 'bank' {fdic_geo}
+            WHERE year = :yr AND COALESCE(file_type, 'bank') != 'credit_union' {fdic_geo}
             GROUP BY cert_number, institution_name
         """),
         {"yr": fdic_year, **geo_p},
