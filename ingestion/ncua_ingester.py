@@ -182,14 +182,15 @@ REQUIRED_COLUMNS = {
     "total_loans",
 }
 
-# NCUA occasionally changes the path structure between years.
-# Candidates are tried in order; the first 200 response wins.
+# NCUA uses the last month of the quarter in the filename (Q1=03, Q2=06, Q3=09, Q4=12).
+# Multiple templates are tried in order; the first 200 response wins.
+_QUARTER_TO_MONTH = {1: "03", 2: "06", 3: "09", 4: "12"}
+
 _NCUA_URL_TEMPLATES = [
+    "https://ncua.gov/files/publications/analysis/call-report-data-{year}-{month}.zip",
+    "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-{month}.zip",
+    "https://ncua.gov/files/publications/analysis/call-report-data-{year}-Q{quarter}.zip",
     "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-Q{quarter}.zip",
-    "https://www.ncua.gov/files/publications/analysis/call-report-data-{year}-q{quarter}.zip",
-    "https://www.ncua.gov/files/call-report-data/call-report-data-{year}-Q{quarter}.zip",
-    "https://www.ncua.gov/files/publications/analysis/5300-call-report-data-{year}-Q{quarter}.zip",
-    "https://www.ncua.gov/files/publications/analysis/NCUA5300CallReportData{year}Q{quarter}.zip",
 ]
 
 
@@ -211,7 +212,8 @@ def ingest_ncua_quarter(year: int, quarter: int, engine: Optional[sa.engine.Engi
         raise ValueError(f"quarter must be 1–4, got {quarter}")
 
     data_period = f"{year}Q{quarter}"
-    urls = [t.format(year=year, quarter=quarter) for t in _NCUA_URL_TEMPLATES]
+    month = _QUARTER_TO_MONTH[quarter]
+    urls = [t.format(year=year, quarter=quarter, month=month) for t in _NCUA_URL_TEMPLATES]
     raw_zip = _download_with_fallback(urls, data_period)
 
     df = _parse_zip(raw_zip, data_period)
