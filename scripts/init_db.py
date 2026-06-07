@@ -45,12 +45,11 @@ DDL_STATEMENTS = [
     # ── Core data tables ──────────────────────────────────────────────────────
     """
     CREATE TABLE IF NOT EXISTS institutions_quarterly (
-        id                          SERIAL      PRIMARY KEY,
         charter_number              TEXT        NOT NULL,
         institution_name            TEXT,
-        state_fips                  CHAR(2),
+        state                       TEXT,
         county_fips                 CHAR(5),
-        period                      TEXT        NOT NULL,  -- e.g. '2024Q4'
+        data_period                 TEXT        NOT NULL,  -- e.g. '2024Q4'
 
         -- Asset / liability totals
         total_assets                NUMERIC,
@@ -121,7 +120,7 @@ DDL_STATEMENTS = [
         credit_risk_tier            TEXT,
 
         ingested_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
-        UNIQUE (charter_number, period)
+        PRIMARY KEY (charter_number, data_period)
     )
     """,
     """
