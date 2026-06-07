@@ -99,6 +99,9 @@ const s = {
   }),
 };
 
+// Banks only appear in FDIC SOD (deposits). All other metrics are NCUA 5300 (CU-only).
+const BANK_FILTER_METRICS = new Set(['deposits']);
+
 export default function CompetitorTable({
   rows = [], ownInstitutionId, metric, onMetricChange,
   period, comparePeriod, selectedCompetitorId, onCompetitorSelect,
@@ -107,6 +110,13 @@ export default function CompetitorTable({
   const [sort, setSort]       = useState('share');
   const [sortDir, setSortDir] = useState('desc');
   const [filter, setFilter]   = useState('all');   // 'all' | 'credit_union' | 'bank'
+
+  const bankFilterAvailable = BANK_FILTER_METRICS.has(metric);
+
+  // Reset bank filter when switching to a metric that has no bank data
+  React.useEffect(() => {
+    if (!bankFilterAvailable && filter === 'bank') setFilter('all');
+  }, [metric, bankFilterAvailable, filter]);
 
   function handleSort(col) {
     if (sort === col) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
@@ -182,7 +192,7 @@ export default function CompetitorTable({
       {/* Controls */}
       <div style={s.controls}>
         <div style={s.filterGroup}>
-          {[['all','All'],['credit_union','Credit Unions'],['bank','Banks']].map(([id,lbl],i,arr) => (
+          {[['all','All'],['credit_union','Credit Unions'],bankFilterAvailable && ['bank','Banks']].filter(Boolean).map(([id,lbl],i,arr) => (
             <button
               key={id}
               style={{ ...s.filterBtn(filter === id), borderRight: i < arr.length - 1 ? '1px solid #cbd5e1' : 'none' }}
@@ -210,8 +220,6 @@ export default function CompetitorTable({
           <div style={s.emptyState}>
             {!geoLabel
               ? 'Click a region on the map to see competitive data.'
-              : filter === 'bank' && rows.some(r => r.institution_type === 'credit_union')
-              ? 'Bank deposit data not available for this geography. Switch to Credit Unions or All to see NCUA data.'
               : 'No data for this geography and period.'}
           </div>
         ) : (
