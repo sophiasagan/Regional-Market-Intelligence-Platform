@@ -189,11 +189,25 @@ COLUMN_MAP: dict[str, str] = {
     "acct_719a":  "alll",
     "acct_719":   "alll",
 
-    # Delinquency balances — FS220 uses 2-month buckets
-    "acct_745c1": "delinq_90day",       # 6+ months (180+ days) delinquent
-    "acct_745c2": "delinq_total",       # Total delinquent loans (all buckets)
+    # Total delinquency (all loan types, all time buckets)
+    "acct_733a":  "delinq_total",
 
-    # Charge-offs (net, year-to-date in annual; quarterly in 5300)
+    # Delinquency by aging bucket (745 series = time-bucket summary)
+    "acct_745c1": "delinq_90day",       # Total 2-6 months past due (all types)
+    "acct_745c2": "delinq_90day",       # Total 6+ months past due — alt bucket
+
+    # Delinquency by loan type (741-748 series)
+    "acct_741a":  "delinq_real_estate", # Real estate 2-6 months
+    "acct_741b1": "delinq_real_estate", # Real estate 6+ months (fallback)
+    "acct_742a":  "delinq_auto",        # Auto 2-6 months
+    "acct_742b1": "delinq_auto",        # Auto 6+ months (fallback)
+    "acct_744b":  "delinq_credit_card", # Credit card delinquency
+    "acct_744c1": "delinq_credit_card", # Credit card (alt)
+    "acct_746a":  "delinq_commercial",  # Commercial/business delinquency
+    "acct_746b2": "delinq_commercial",  # Commercial (alt)
+
+    # Charge-offs (net, quarterly in 5300)
+    "acct_750a":  "net_charge_offs",
     "acct_748a":  "net_charge_offs",
     "acct_748":   "net_charge_offs",
 
@@ -205,10 +219,11 @@ COLUMN_MAP: dict[str, str] = {
     "acct_387a":  "tdr_balance",
     "acct_387":   "tdr_balance",
 
-    # Loan category balances (for per-type delinquency rate denominators)
+    # Loan category balances (denominators for per-type delinquency rates)
     "acct_025a":  "loans_real_estate",
-    "acct_395":   "loans_auto",
-    "acct_370":   "loans_credit_card",
+    "acct_703":   "loans_real_estate",  # Real estate loans total
+    "acct_704":   "loans_auto",         # Auto loans total
+    "acct_705":   "loans_credit_card",  # Credit card loans total
     "acct_400a":  "loans_commercial",
     "acct_400b":  "loans_commercial",
 }

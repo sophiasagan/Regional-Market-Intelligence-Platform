@@ -125,7 +125,7 @@ DDL_STATEMENTS = [
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_iq_period
-        ON institutions_quarterly (period)
+        ON institutions_quarterly (data_period)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_iq_county
@@ -133,7 +133,7 @@ DDL_STATEMENTS = [
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_iq_state
-        ON institutions_quarterly (state_fips)
+        ON institutions_quarterly (state)
     """,
     """
     CREATE TABLE IF NOT EXISTS branches_annual (
