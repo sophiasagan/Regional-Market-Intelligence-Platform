@@ -26,6 +26,24 @@ from database import get_engine
 router = APIRouter(prefix="/market-share", tags=["market-share"])
 
 # ---------------------------------------------------------------------------
+# State FIPS → abbreviation (MarketMap sends 2-digit FIPS; DB stores abbr)
+# ---------------------------------------------------------------------------
+_STATE_FIPS: dict[str, str] = {
+    "01":"AL","02":"AK","04":"AZ","05":"AR","06":"CA","08":"CO","09":"CT",
+    "10":"DE","11":"DC","12":"FL","13":"GA","15":"HI","16":"ID","17":"IL",
+    "18":"IN","19":"IA","20":"KS","21":"KY","22":"LA","23":"ME","24":"MD",
+    "25":"MA","26":"MI","27":"MN","28":"MS","29":"MO","30":"MT","31":"NE",
+    "32":"NV","33":"NH","34":"NJ","35":"NM","36":"NY","37":"NC","38":"ND",
+    "39":"OH","40":"OK","41":"OR","42":"PA","44":"RI","45":"SC","46":"SD",
+    "47":"TN","48":"TX","49":"UT","50":"VT","51":"VA","53":"WA","54":"WV",
+    "55":"WI","56":"WY","72":"PR","78":"VI",
+}
+
+def _fips_to_abbr(geo_id: str) -> str:
+    """Convert '51' → 'VA'. Pass-through if already an abbreviation."""
+    return _STATE_FIPS.get(geo_id.zfill(2), geo_id)
+
+# ---------------------------------------------------------------------------
 # Metric → column mappings
 # ---------------------------------------------------------------------------
 _IQ_METRICS: dict[str, str] = {
@@ -197,6 +215,17 @@ def _county_map_fdic(conn, period: str, institution_id: str) -> dict:
 
 def _county_map_ncua(conn, period: str, metric: str, institution_id: str, institution_types: str) -> dict:
     col = _ncua_col(metric)
+    # Resolve the period — use latest available if requested period has no data
+    has_period = conn.execute(
+        text(f"SELECT 1 FROM institutions_quarterly WHERE data_period = :p AND {col} IS NOT NULL LIMIT 1"),
+        {"p": period},
+    ).fetchone()
+    if not has_period:
+        row = conn.execute(
+            text(f"SELECT data_period FROM institutions_quarterly WHERE {col} IS NOT NULL ORDER BY data_period DESC LIMIT 1")
+        ).fetchone()
+        if row:
+            period = row[0]
 
     # Resolve institution
     if institution_id:
@@ -369,17 +398,47 @@ def _ms_fdic(conn, geo_type: str, geo_id: str, period: str, institution_types: s
 
 
 def _ms_ncua(conn, geo_type: str, geo_id: str, period: str, metric: str, institution_types: str) -> list[dict]:
-    col        = _ncua_col(metric)
-    prior_p    = _prior_period_ncua(period)
+    col     = _ncua_col(metric)
+    prior_p = _prior_period_ncua(period)
 
-    if geo_type == "county":
-        geo_filter = "AND county_fips = :geo_id"
-    elif geo_type == "state":
-        geo_filter = "AND state = :geo_id"
+    # Translate state FIPS → abbreviation for state and county queries
+    state_abbr = None
+    effective_geo_type = geo_type
+    confidence = "measured"
+
+    if geo_type == "state":
+        state_abbr = _fips_to_abbr(geo_id)
+        geo_filter = "AND state = :state_abbr"
+        params: dict = {"p": period, "pp": prior_p, "state_abbr": state_abbr}
+
+    elif geo_type == "county":
+        # county_fips is only populated for a small fraction of NCUA records
+        # (geocoder hasn't run).  Check if there's enough county data;
+        # if not, fall back to the state that owns this county.
+        county_count = conn.execute(
+            text(f"""
+                SELECT COUNT(*) FROM institutions_quarterly
+                WHERE data_period = :p AND county_fips = :geo_id AND {col} IS NOT NULL
+            """),
+            {"p": period, "geo_id": geo_id},
+        ).scalar()
+
+        if county_count and county_count >= 2:
+            geo_filter = "AND county_fips = :geo_id"
+            params = {"p": period, "pp": prior_p, "geo_id": geo_id}
+            confidence = "modeled"
+        else:
+            # Fall back: use the state from the 2-digit county FIPS prefix
+            state_fips_prefix = str(geo_id).zfill(5)[:2]
+            state_abbr = _fips_to_abbr(state_fips_prefix)
+            geo_filter = "AND state = :state_abbr"
+            params = {"p": period, "pp": prior_p, "state_abbr": state_abbr}
+            effective_geo_type = "state"
+            confidence = "modeled"  # showing state as proxy for county
+
     else:
-        geo_filter = "AND state IS NOT NULL"  # national: all
-
-    params: dict = {"p": period, "pp": prior_p, "geo_id": geo_id}
+        geo_filter = ""
+        params = {"p": period, "pp": prior_p}
 
     rows = conn.execute(
         text(f"""
@@ -424,6 +483,6 @@ def _ms_ncua(conn, geo_type: str, geo_id: str, period: str, metric: str, institu
             "market_share":              share,
             "value":                     val,
             "share_change_prior_period": change,
-            "confidence":                "modeled" if geo_type == "county" else "measured",
+            "confidence":                confidence,
         })
     return result
