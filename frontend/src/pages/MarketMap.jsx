@@ -211,13 +211,37 @@ export default function MarketMap() {
         paint: { 'line-color': '#f59e0b', 'line-width': 3 },
       });
 
-      // State fill — clickable only in state mode (visibility toggled below)
+      // State fill — clickable only in state mode (visibility toggled below).
+      // fill-opacity must be > 0 for Mapbox to fire click events.
       map.addLayer({
         id: 'state-fill',
         type: 'fill',
         source: 'states',
         layout: { visibility: 'none' },
-        paint: { 'fill-color': 'transparent', 'fill-opacity': 0 },
+        paint: {
+          'fill-color': '#2563eb',
+          'fill-opacity': [
+            'case', ['boolean', ['feature-state', 'hovered'], false], 0.12, 0.04,
+          ],
+        },
+      });
+
+      // ── State hover ───────────────────────────────────────────────────────
+      let hoveredStateId = null;
+      map.on('mousemove', 'state-fill', (e) => {
+        map.getCanvas().style.cursor = 'pointer';
+        if (hoveredStateId !== null) {
+          map.setFeatureState({ source: 'states', id: hoveredStateId }, { hovered: false });
+        }
+        hoveredStateId = e.features[0].id;
+        map.setFeatureState({ source: 'states', id: hoveredStateId }, { hovered: true });
+      });
+      map.on('mouseleave', 'state-fill', () => {
+        map.getCanvas().style.cursor = '';
+        if (hoveredStateId !== null) {
+          map.setFeatureState({ source: 'states', id: hoveredStateId }, { hovered: false });
+          hoveredStateId = null;
+        }
       });
 
       // ── Hover ─────────────────────────────────────────────────────────────
@@ -255,7 +279,9 @@ export default function MarketMap() {
 
       // ── Click — state (activated when geoType === 'state') ────────────────
       map.on('click', 'state-fill', (e) => {
-        const stateId = normFips(e.features[0].id).slice(0, 2);
+        // State TopoJSON feature IDs are 2-digit FIPS integers (e.g. 39 → "39").
+        // normFips pads to 5 digits so we can't use it here.
+        const stateId = String(e.features[0].id).padStart(2, '0');
         setSelectedFips(stateId);
         setGeoLabel(e.features[0].properties?.name ?? `State ${stateId}`);
       });
