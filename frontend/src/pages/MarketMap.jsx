@@ -80,7 +80,7 @@ export default function MarketMap() {
 
   // UI state
   const [geoType,        setGeoType]        = useState('county');
-  const [period,         setPeriod]         = useState('2023');
+  const [period,         setPeriod]         = useState('latest');
   const [comparePeriod,  setComparePeriod]  = useState(null);
   const [metric,         setMetric]         = useState('deposits');
   const [instTypes]                         = useState(['credit_union', 'bank']);
@@ -395,7 +395,15 @@ export default function MarketMap() {
   useEffect(() => {
     fetch(`${API_BASE}/market-share/periods?metric=${metric}`)
       .then(r => r.ok ? r.json() : [])
-      .then(periods => setAvailablePeriods(Array.isArray(periods) ? periods : []))
+      .then(periods => {
+        const ps = Array.isArray(periods) ? periods : [];
+        setAvailablePeriods(ps);
+        // Auto-select the most recent real period when current period is
+        // 'latest' or not present in the returned list.
+        if (ps.length > 0) {
+          setPeriod(prev => (prev === 'latest' || !ps.includes(prev)) ? ps[0] : prev);
+        }
+      })
       .catch(() => {});
   }, [metric]);
 

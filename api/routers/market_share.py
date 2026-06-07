@@ -105,6 +105,24 @@ def _has_fdic_data(conn) -> bool:
     return row is not None
 
 
+def _resolve_ncua_period(conn, period: str, col: str) -> str:
+    """Return the most recent period that has non-NULL data for `col`.
+
+    Falls back when `period` is 'latest', empty, or has no matching rows.
+    """
+    if period and period.upper() not in ("LATEST", ""):
+        has = conn.execute(
+            text(f"SELECT 1 FROM institutions_quarterly WHERE data_period = :p AND {col} IS NOT NULL LIMIT 1"),
+            {"p": period},
+        ).fetchone()
+        if has:
+            return period
+    row = conn.execute(
+        text(f"SELECT data_period FROM institutions_quarterly WHERE {col} IS NOT NULL ORDER BY data_period DESC LIMIT 1")
+    ).fetchone()
+    return row[0] if row else period
+
+
 def _period_is_annual(period: str) -> bool:
     """'2023' → True (FDIC annual).  '2024Q4' → False (NCUA quarterly)."""
     return len(period) == 4 and period.isdigit()
@@ -215,17 +233,7 @@ def _county_map_fdic(conn, period: str, institution_id: str) -> dict:
 
 def _county_map_ncua(conn, period: str, metric: str, institution_id: str, institution_types: str) -> dict:
     col = _ncua_col(metric)
-    # Resolve the period — use latest available if requested period has no data
-    has_period = conn.execute(
-        text(f"SELECT 1 FROM institutions_quarterly WHERE data_period = :p AND {col} IS NOT NULL LIMIT 1"),
-        {"p": period},
-    ).fetchone()
-    if not has_period:
-        row = conn.execute(
-            text(f"SELECT data_period FROM institutions_quarterly WHERE {col} IS NOT NULL ORDER BY data_period DESC LIMIT 1")
-        ).fetchone()
-        if row:
-            period = row[0]
+    period = _resolve_ncua_period(conn, period, col)
 
     # Resolve institution
     if institution_id:
@@ -398,7 +406,8 @@ def _ms_fdic(conn, geo_type: str, geo_id: str, period: str, institution_types: s
 
 
 def _ms_ncua(conn, geo_type: str, geo_id: str, period: str, metric: str, institution_types: str) -> list[dict]:
-    col     = _ncua_col(metric)
+    col    = _ncua_col(metric)
+    period = _resolve_ncua_period(conn, period, col)
     prior_p = _prior_period_ncua(period)
 
     # Translate state FIPS → abbreviation for state and county queries
