@@ -622,14 +622,14 @@ export default function DelinquencyDashboard() {
   // Trend tab
   useEffect(() => {
     if (activeTab !== 0) return;
-    load('trend', apiFetch('/delinquency/trend', { metric: trendMetric, n_periods: 8 }));
-  }, [activeTab, trendMetric]);
+    load('trend', apiFetch('/delinquency/trend', { period, metric: trendMetric, n_periods: 8 }));
+  }, [activeTab, period, trendMetric]);
 
   // Peer distribution tab
   useEffect(() => {
     if (activeTab !== 1) return;
-    load('dist', apiFetch('/delinquency/peer-distribution', { metric: distMetric, peer_type: peerType }));
-  }, [activeTab, distMetric, peerType]);
+    load('dist', apiFetch('/delinquency/peer-distribution', { period, metric: distMetric, peer_type: peerType }));
+  }, [activeTab, period, distMetric, peerType]);
 
   // Loan breakdown tab
   useEffect(() => {

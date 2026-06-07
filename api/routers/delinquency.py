@@ -303,13 +303,34 @@ async def summary(
 @router.get("/trend")
 async def trend(
     institution_id: str = Query(default=""),
+    period: str = Query(default=""),
     metric: str = Query(default="delinq_rate_total"),
     n_periods: int = Query(default=8, ge=2, le=20),
 ):
     if metric not in ALLOWED_METRICS:
         raise HTTPException(400, f"metric must be one of: {sorted(ALLOWED_METRICS)}")
 
-    latest_period = "2024Q4"
+    # Resolve the end period: requested period if data exists, else latest available
+    engine = get_engine()
+    with engine.connect() as conn:
+        latest_row = conn.execute(
+            text("""
+                SELECT data_period FROM institutions_quarterly
+                WHERE total_loans > 0
+                ORDER BY data_period DESC LIMIT 1
+            """)
+        ).fetchone()
+        latest_available = latest_row[0] if latest_row else "2024Q4"
+
+        if period:
+            has_period = conn.execute(
+                text("SELECT 1 FROM institutions_quarterly WHERE data_period = :p LIMIT 1"),
+                {"p": period},
+            ).fetchone()
+            latest_period = period if has_period else latest_available
+        else:
+            latest_period = latest_available
+
     periods = _recent_periods(latest_period, n_periods)
 
     # Build safe IN-clause: :p0, :p1, ... :pN
