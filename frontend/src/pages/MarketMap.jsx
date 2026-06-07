@@ -77,6 +77,8 @@ export default function MarketMap() {
   const shareDataRef        = useRef({});
   const compDataRef         = useRef({});
   const selectedFipsRef     = useRef(null);
+  // Tracks the raw numeric feature ID of the selected county for setFeatureState
+  const selectedRawIdRef    = useRef(null);
 
   // UI state
   const [geoType,        setGeoType]        = useState('county');
@@ -202,13 +204,15 @@ export default function MarketMap() {
         },
       });
 
-      // Selected-county fill — amber overlay distinct from blue choropleth
+      // Selected-county amber fill — driven by feature-state to avoid ID type mismatch
       map.addLayer({
         id: 'county-selected-fill',
         type: 'fill',
         source: 'counties',
-        filter: ['==', ['id'], ''],
-        paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.30 },
+        paint: {
+          'fill-color': '#f59e0b',
+          'fill-opacity': ['case', ['boolean', ['feature-state', 'selected'], false], 0.30, 0],
+        },
       });
 
       // Selected-county highlight ring
@@ -216,8 +220,11 @@ export default function MarketMap() {
         id: 'county-selected',
         type: 'line',
         source: 'counties',
-        filter: ['==', ['id'], ''],
-        paint: { 'line-color': '#d97706', 'line-width': 2.5 },
+        paint: {
+          'line-color': '#d97706',
+          'line-width': 2.5,
+          'line-opacity': ['case', ['boolean', ['feature-state', 'selected'], false], 1, 0],
+        },
       });
 
       // State fill — clickable only in state mode (visibility toggled below).
@@ -281,7 +288,16 @@ export default function MarketMap() {
 
       // ── Click — county ────────────────────────────────────────────────────
       map.on('click', 'county-fill-own', (e) => {
-        const fips = normFips(e.features[0].id);
+        const id   = e.features[0].id;
+        const fips = normFips(id);
+
+        // Clear previous selection highlight via feature-state
+        if (selectedRawIdRef.current != null) {
+          map.setFeatureState({ source: 'counties', id: selectedRawIdRef.current }, { selected: false });
+        }
+        map.setFeatureState({ source: 'counties', id }, { selected: true });
+        selectedRawIdRef.current = id;
+
         setSelectedFips(fips);
         setGeoLabel(`County ${fips}`);
       });
@@ -341,13 +357,15 @@ export default function MarketMap() {
   }, [compData, mapReady]);
 
   // ── Selected county highlight ─────────────────────────────────────────────
-
+  // Highlight is managed via feature-state in the click handler.
+  // This effect only clears the highlight if selectedFips is reset externally.
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady) return;
-    const f = ['==', ['id'], selectedFips ?? ''];
-    map.setFilter('county-selected-fill', f);
-    map.setFilter('county-selected', f);
+    if (!map || !mapReady || selectedFips) return;
+    if (selectedRawIdRef.current != null) {
+      map.setFeatureState({ source: 'counties', id: selectedRawIdRef.current }, { selected: false });
+      selectedRawIdRef.current = null;
+    }
   }, [selectedFips, mapReady]);
 
   // ── Competitor overlay layer visibility ───────────────────────────────────
