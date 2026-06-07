@@ -337,6 +337,16 @@ CREATE TABLE IF NOT EXISTS branches_annual (
 
 def _upsert(df: pd.DataFrame, engine: sa.engine.Engine) -> pd.DataFrame:
     with engine.begin() as conn:
+        # Check if the table exists with the expected schema.
+        # If branch_id column is missing the table was created with an old schema —
+        # drop and recreate (safe because branches_annual starts empty).
+        has_branch_id = conn.execute(sa.text("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'branches_annual' AND column_name = 'branch_id'
+        """)).fetchone()
+        if not has_branch_id:
+            logger.warning("branches_annual schema is stale — dropping and recreating")
+            conn.execute(sa.text("DROP TABLE IF EXISTS branches_annual"))
         conn.execute(_TABLE_DDL)
 
     # Align df columns to match table; fill missing with None
