@@ -44,8 +44,12 @@ _DELINQ_RATE_METRICS = [
     "delinq_rate_total",
     "delinq_rate_auto",
     "delinq_rate_real_estate",
+    "delinq_rate_first_mortgage",
     "delinq_rate_credit_card",
     "delinq_rate_commercial",
+    "delinq_rate_indirect",
+    "delinq_rate_new_auto",
+    "delinq_rate_used_auto",
     "delinq_90plus_rate",
 ]
 
@@ -58,6 +62,42 @@ _ALL_DELINQ_METRICS = _DELINQ_RATE_METRICS + [
     "tdr_to_loans_ratio",
     "oreo_to_assets_ratio",
 ]
+
+# ── Callahan → P76 metric vocabulary map ─────────────────────────────────────
+# CLAUDE.md §Callahan metric name mapping.
+# Keys are exact Callahan Associates display names (lowercase).
+# Claude uses this map in Turn 1 to translate user vocabulary to internal metric names,
+# and in Turn 2 to confirm which metric was used.
+
+CALLAHAN_TO_P76_METRIC_MAP: dict[str, str] = {
+    # Core credit quality
+    "delinquency ratio":                            "delinq_rate_total",
+    "total delinquency":                            "delinq_rate_total",
+    "net charge-off ratio":                         "chargeoff_rate_total",
+    "net charge-offs to average loans":             "chargeoff_rate_total",
+    "allowance for loan losses to delinquent loans":"alll_coverage_ratio",
+    "allowance for loan losses/delinquency":        "alll_coverage_ratio",
+    "allowance for loan losses to total loans":     "alll_to_loans_ratio",
+    # Delinquency by bucket
+    "total delinquency 90+ days":                   "delinq_90plus_rate",
+    # Delinquency by loan type
+    "total auto loan delinquency":                  "delinq_rate_auto",
+    "new auto loan delinquency":                    "delinq_rate_new_auto",
+    "used auto loan delinquency":                   "delinq_rate_used_auto",
+    "credit card loan delinquency":                 "delinq_rate_credit_card",
+    "real estate delinquency":                      "delinq_rate_real_estate",
+    "1st mortgage delinquency":                     "delinq_rate_first_mortgage",
+    "commercial loan delinquency":                  "delinq_rate_commercial",
+    "indirect loan delinquency":                    "delinq_rate_indirect",
+    # Ratio metrics not in the standard delinquency rate list
+    "delinquent loans to assets":                   "delinq_to_assets",
+    "delinquent loans to net worth":                "delinq_to_net_worth",
+    "net charge-offs to prior year delinquency":    "nco_to_prior_delinquency",
+}
+
+# Reverse map: P76 internal name → canonical Callahan display label.
+# Used by the synthesis prompt to confirm which metric was used.
+_P76_TO_CALLAHAN_LABEL: dict[str, str] = {v: k for k, v in CALLAHAN_TO_P76_METRIC_MAP.items()}
 
 _LOAN_BREAKDOWN_PAIRS = [
     ("real_estate",  "delinq_rate_real_estate",  "Real Estate"),
@@ -253,6 +293,13 @@ def _build_system_prompt(context: dict[str, Any]) -> str:
     own_county   = context.get("primary_county", "(unknown)")
     own_msa      = context.get("primary_msa", "(unknown)")
     own_state    = context.get("own_state", "(unknown)")
+
+    # Format the vocabulary map for inclusion in the prompt.
+    callahan_map_text = "\n".join(
+        f'  "{k}" → {v}'
+        for k, v in CALLAHAN_TO_P76_METRIC_MAP.items()
+    )
+
     return f"""\
 You are a market intelligence and credit quality analyst for a credit union. \
 Translate competitive and portfolio-quality questions into precise tool calls. \
@@ -284,7 +331,21 @@ Geography IDs:
   msa:    CBSA code (e.g. "33100" = Miami-Fort Lauderdale)
 
 Periods: YYYYQ# for delinquency/loan questions (e.g. "2024Q4"). \
-Default to the most recent quarter when unspecified.\
+Default to the most recent quarter when unspecified.
+
+Callahan metric vocabulary — you understand both Callahan Associates metric names \
+and P76 internal metric names. When the user asks about a Callahan-named metric, \
+silently map it to the correct P76 internal name in your tool call:
+{callahan_map_text}
+
+Examples of correct translation:
+  User says "delinquency ratio"         → use metric "delinq_rate_total"
+  User says "net charge-off ratio"      → use metric "chargeoff_rate_total"
+  User says "1st mortgage delinquency"  → use metric "delinq_rate_first_mortgage"
+
+In your natural_language_summary parameter, record both names so the narrative \
+turn can confirm which metric was used, e.g.: \
+"Total Delinquency Ratio (Callahan: 'delinquency ratio')"\
 """
 
 
@@ -304,7 +365,19 @@ Rules:
 - For ALLL coverage below 1.0x: state this is below the examiner alert threshold
 - Concise: 2–4 sentences for comparisons; up to 6 for breakdowns or complex analyses
 - End with a concrete next-step only when a metric is at or above the peer 75th percentile
-- Do not hedge with "may" or "might" when you have actual numbers — state what the data shows\
+- Do not hedge with "may" or "might" when you have actual numbers — state what the data shows
+- Metric confirmation (always include on the first line of your response): \
+  "Using: [display name] (equivalent to Callahan's [Callahan term])" — \
+  use the exact Callahan term the user asked about if they used Callahan vocabulary, \
+  or just "Using: [display name]" if they used P76 or generic terminology. \
+  Examples:
+    Using: Total Delinquency Ratio (equivalent to Callahan's Delinquency Ratio)
+    Using: Net Charge-Off Ratio (equivalent to Callahan's Net Charge-Off Ratio)
+    Using: Allowance for Loan Losses / Delinquent Loans (equivalent to Callahan's \
+  Allowance for Loan Losses/Delinquency)
+    Using: Auto Loan Delinquency Ratio
+- Data source: always note NCUA 5300 call report and the reporting period \
+  (e.g. "Q4 2024 NCUA 5300 data")\
 """
 
 # ── Request / Response models ─────────────────────────────────────────────────
