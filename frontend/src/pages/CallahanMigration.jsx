@@ -466,7 +466,7 @@ function Step2({ latestPeriod, onComplete }) {
       let rows;
       const ext = file.name.split('.').pop().toLowerCase();
       if (ext === 'xlsx' || ext === 'xls') {
-        const XLSX = await import('xlsx').catch(() => null);
+        const XLSX = await import(/* @vite-ignore */ 'xlsx').catch(() => null);
         if (!XLSX) {
           setParseErr(
             'Excel (.xlsx) support requires the xlsx npm package. ' +
