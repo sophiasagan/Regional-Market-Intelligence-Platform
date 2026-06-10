@@ -15,7 +15,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import alerts, delinquency, market_share, query, reports
+from api.routers import alerts, delinquency, market_share, peers, query, reports
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ app.add_middleware(
 app.include_router(alerts.router)
 app.include_router(delinquency.router)
 app.include_router(market_share.router)
+app.include_router(peers.router)
 app.include_router(query.router)
 app.include_router(reports.router)
 
