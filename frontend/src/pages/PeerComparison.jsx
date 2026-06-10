@@ -93,7 +93,7 @@ function normalizeForRadar(metrics, allIds) {
 // ── Main component ─────────────────────────────────────────────────────────────
 
 export default function PeerComparison() {
-  const [period,        setPeriod]        = useState('2023');
+  const [period,        setPeriod]        = useState(String(new Date().getFullYear() - 1));
   const [peerMode,      setPeerMode]      = useState('auto');   // 'auto' | 'custom'
   const [peers,         setPeers]         = useState([]);        // [{id, name, state, total_assets}]
   const [trendMetric,   setTrendMetric]   = useState('deposit_market_share');
@@ -220,7 +220,7 @@ export default function PeerComparison() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <select style={L.periodSelect} value={period} onChange={e => setPeriod(e.target.value)}>
-            {['2023','2022','2021','2020'].map(y => <option key={y} value={y}>{y}</option>)}
+            {Array.from({ length: 7 }, (_, i) => String(new Date().getFullYear() - 1 - i)).map(y => <option key={y} value={y}>{y}</option>)}
           </select>
           <button onClick={handleGenerateReport} disabled={reportLoading || !peers.length} style={L.reportBtn}>
             {reportLoading ? '⏳ Generating…' : '↓ Generate Report'}

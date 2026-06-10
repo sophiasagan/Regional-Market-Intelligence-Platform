@@ -5,6 +5,8 @@ import MarketMap from './pages/MarketMap';
 import PeerComparison from './pages/PeerComparison';
 import NLQuery from './pages/NLQuery';
 import DelinquencyDashboard from './pages/DelinquencyDashboard';
+import CreditQuality from './pages/CreditQuality';
+import CallahanMigration from './pages/CallahanMigration';
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -28,10 +30,11 @@ class ErrorBoundary extends React.Component {
 }
 
 const NAV_ITEMS = [
-  { to: '/delinquency',  label: 'Credit Quality' },
-  { to: '/market-map',   label: 'Market Map'     },
-  { to: '/peers',        label: 'Peer Comparison' },
-  { to: '/query',        label: 'Ask a Question'  },
+  { to: '/credit-quality',      label: 'Credit Quality'    },
+  { to: '/market-map',          label: 'Market Map'        },
+  { to: '/peers',               label: 'Peer Comparison'   },
+  { to: '/query',               label: 'Ask a Question'    },
+  { to: '/callahan-migration',  label: 'Callahan Migration' },
 ];
 
 function NavBar() {
@@ -87,11 +90,13 @@ createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <Layout>
           <Routes>
-            <Route path="/" element={<Navigate to="/delinquency" replace />} />
-            <Route path="/market-map"   element={<MarketMap />} />
-            <Route path="/peers"        element={<PeerComparison />} />
-            <Route path="/query"        element={<NLQuery />} />
-            <Route path="/delinquency"  element={<DelinquencyDashboard />} />
+            <Route path="/" element={<Navigate to="/credit-quality" replace />} />
+            <Route path="/credit-quality"     element={<CreditQuality />} />
+            <Route path="/market-map"         element={<MarketMap />} />
+            <Route path="/peers"              element={<PeerComparison />} />
+            <Route path="/query"              element={<NLQuery />} />
+            <Route path="/delinquency"        element={<DelinquencyDashboard />} />
+            <Route path="/callahan-migration" element={<CallahanMigration />} />
           </Routes>
         </Layout>
       </BrowserRouter>
