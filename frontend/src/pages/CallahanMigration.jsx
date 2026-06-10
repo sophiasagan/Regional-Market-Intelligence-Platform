@@ -466,21 +466,13 @@ function Step2({ latestPeriod, onComplete }) {
       let rows;
       const ext = file.name.split('.').pop().toLowerCase();
       if (ext === 'xlsx' || ext === 'xls') {
-        const XLSX = await import(/* @vite-ignore */ 'xlsx').catch(() => null);
-        if (!XLSX) {
-          setParseErr(
-            'Excel (.xlsx) support requires the xlsx npm package. ' +
-            'Please save your Callahan export as CSV (File → Save As → CSV UTF-8) and re-upload.'
-          );
-          return;
-        }
-        const buf = await file.arrayBuffer();
-        const wb  = XLSX.read(buf, { type: 'array' });
-        const ws  = wb.Sheets[wb.SheetNames[0]];
-        rows = XLSX.utils.sheet_to_json(ws, { raw: false, defval: '' });
-      } else {
-        rows = parseCSV(await file.text());
+        setParseErr(
+          'Excel (.xlsx) files are not supported directly. ' +
+          'In Callahan: open your export → File → Save As → CSV UTF-8, then re-upload the .csv file.'
+        );
+        return;
       }
+      rows = parseCSV(await file.text());
 
       if (!rows.length) { setParseErr('No data rows found in file.'); return; }
 
@@ -589,10 +581,10 @@ function Step2({ latestPeriod, onComplete }) {
             Drop your Callahan export here, or click to browse
           </div>
           <div style={{ fontSize: 12, color: '#94a3b8' }}>
-            CSV or XLSX · In Callahan: FPR → Asset Quality → Export to Excel
+            CSV only · In Callahan: FPR → Asset Quality → Export to Excel → Save As CSV
           </div>
           <input
-            ref={inputRef} type="file" accept=".csv,.xlsx,.xls"
+            ref={inputRef} type="file" accept=".csv"
             style={{ display: 'none' }}
             onChange={e => { const f = e.target.files[0]; if (f) processFile(f); e.target.value = ''; }}
           />
