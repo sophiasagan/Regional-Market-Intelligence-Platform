@@ -48,6 +48,8 @@ const ep = {
   signal:   (cn, m, period, pt)=> `${API}/delinquency/${cn}/signal?metric=${m}&period=${period}&peer_group_type=${pt}`,
   ew:       (cn, m, pt)        => `${API}/delinquency/${cn}/early-warning?metric=${m}&peer_group_type=${pt}`,
   latest:   ()                 => `${API}/delinquency/latest-period`,
+  fullComp: (cn, period, pt)   => `${API}/delinquency/${cn}/full-comparison?period=${period}&peer_group_type=${pt}`,
+  regional: (cn, m, period)    => `${API}/delinquency/${cn}/regional?metric=${m}&period=${period}`,
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -121,6 +123,46 @@ const LOAN_TYPE_ROWS = [
   { metric: 'delinq_rate_credit_card',    label: 'Credit Card'   },
   { metric: 'delinq_rate_commercial',     label: 'Commercial'    },
   { metric: 'delinq_rate_indirect',       label: 'Indirect'      },
+];
+
+// Peer Comparison Table — mirrors Callahan's Asset Quality FPR table structure exactly.
+const TABLE_SECTIONS = [
+  {
+    title: 'Delinquency',
+    rows: [
+      { metric: 'delinq_rate_total',          label: 'Total Delinquency Ratio'                   },
+      { metric: 'delinq_90plus_rate',          label: '90+ Day Delinquency'                       },
+      { metric: 'delinq_rate_reportable',      label: 'Delinquency Ratio (Reportable)',  optional: true },
+      { metric: 'delinq_rate_first_mortgage',  label: '1st Mortgage Delinquency'                 },
+      { metric: 'delinq_rate_real_estate',     label: 'Other Real Estate Delinquency'            },
+      { metric: 'delinq_rate_auto',            label: 'Total Auto Loan Delinquency'              },
+      { metric: 'delinq_rate_new_auto',        label: 'New Auto Loan Delinquency'                },
+      { metric: 'delinq_rate_used_auto',       label: 'Used Auto Loan Delinquency'               },
+      { metric: 'delinq_rate_indirect',        label: 'Indirect Loan Delinquency'                },
+      { metric: 'delinq_rate_credit_card',     label: 'Credit Card Loan Delinquency'             },
+      { metric: 'delinq_rate_commercial',      label: 'Commercial Loan Delinquency'              },
+    ],
+  },
+  {
+    title: 'Charge-offs',
+    rows: [
+      { metric: 'chargeoff_rate_total',        label: 'Net Charge-Off Ratio'                     },
+      { metric: 'nco_to_prior_delinquency',    label: 'Net Charge-Offs to Prior Year Delinquency', optional: true },
+    ],
+  },
+  {
+    title: 'Allowance for Loan Losses',
+    rows: [
+      { metric: 'alll_coverage_ratio',         label: 'Allowance for Loan Losses / Delinquent Loans' },
+      { metric: 'alll_to_loans_ratio',         label: 'ALLL / Total Loans'                       },
+    ],
+  },
+  {
+    title: 'Troubled Debt',
+    rows: [
+      { metric: 'tdr_to_loans_ratio',          label: 'Delinquent Restructured Loans / Total Loans' },
+    ],
+  },
 ];
 
 const PERIOD_OPTIONS = [
@@ -386,6 +428,298 @@ function LoanTypeBreakdown({ data, isLoading }) {
   );
 }
 
+// ── Peer Comparison Table ─────────────────────────────────────────────────────
+// Matches Callahan's Asset Quality FPR (Financial Performance Report) table.
+// Green row = institution in top decile (best performers).
+// Red row   = institution in bottom decile (worst performers).
+
+function PeerComparisonTable({ data, isLoading, selectedMetric, onMetricSelect }) {
+  if (isLoading) return <ChartSkeleton height={220} />;
+
+  function rowColors(metric, pctRank) {
+    if (pctRank == null) return {};
+    const decile = getDecile(pctRank, LOWER_IS_BETTER.has(metric));
+    if (decile === 'top')    return { backgroundColor: '#f0fdf4' };  // Callahan green
+    if (decile === 'bottom') return { backgroundColor: '#fff1f2' };  // Callahan red
+    return {};
+  }
+
+  function exportTableExcel() {
+    const rows = [['Metric', 'Your Value', 'Peer Median', 'Top Decile', 'Bottom Decile', 'Your Percentile']];
+    TABLE_SECTIONS.forEach(section => {
+      rows.push([section.title, '', '', '', '', '']);
+      section.rows.forEach(({ metric, label }) => {
+        const d = data?.[metric];
+        if (!d && !data) { rows.push([label, '—', '—', '—', '—', '—']); return; }
+        const lib = LOWER_IS_BETTER.has(metric);
+        rows.push([
+          label,
+          fmtMetric(d?.own_rate, metric),
+          fmtMetric(d?.peer_median, metric),
+          fmtMetric(d?.top_decile_value, metric),
+          fmtMetric(d?.bottom_decile_value, metric),
+          d?.percentile_rank != null
+            ? `${(d.percentile_rank * 100).toFixed(0)}th pct${lib ? ' (lower=better)' : ''}`
+            : '—',
+        ]);
+      });
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    Object.assign(document.createElement('a'), {
+      href: URL.createObjectURL(blob),
+      download: 'credit-quality-peer-comparison.csv',
+    }).click();
+  }
+
+  const th = {
+    padding: '7px 12px', textAlign: 'right', fontSize: 11, fontWeight: 700,
+    color: '#64748b', backgroundColor: '#f8fafc', borderBottom: '2px solid #e2e8f0',
+    whiteSpace: 'nowrap',
+  };
+  const td = { padding: '7px 12px', fontSize: 12, textAlign: 'right',
+               fontVariantNumeric: 'tabular-nums', borderBottom: '1px solid #f1f5f9' };
+  const tdName = { ...td, textAlign: 'left', fontWeight: 500, color: '#0f172a', paddingLeft: 14 };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
+            Peer Comparison
+          </h3>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+            For delinquency and charge-off metrics, lower percentile = better performance.
+            Green row = top 10% of peers · Red row = bottom 10% of peers.
+          </p>
+        </div>
+        <button onClick={exportTableExcel} style={s.exportBtn}>↓ Download as Excel</button>
+      </div>
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: 'left', paddingLeft: 14 }}>Metric</th>
+              <th style={th}>Your Value</th>
+              <th style={th}>Peer Median</th>
+              <th style={{ ...th, color: '#15803d' }}>Top Decile</th>
+              <th style={{ ...th, color: '#b91c1c' }}>Bottom Decile</th>
+              <th style={th}>Your Percentile</th>
+            </tr>
+          </thead>
+          <tbody>
+            {TABLE_SECTIONS.map(section => (
+              <React.Fragment key={section.title}>
+                <tr>
+                  <td colSpan={6} style={{
+                    padding: '10px 14px 4px', fontSize: 11, fontWeight: 800,
+                    color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em',
+                    backgroundColor: '#f8fafc', borderTop: '1.5px solid #e2e8f0',
+                    borderBottom: '1px solid #e2e8f0',
+                  }}>
+                    {section.title}
+                  </td>
+                </tr>
+                {section.rows.map(({ metric, label, optional }) => {
+                  const d = data?.[metric];
+                  const lib = LOWER_IS_BETTER.has(metric);
+                  const pctRank = d?.percentile_rank;
+                  const decile = getDecile(pctRank, lib);
+                  const isActive = metric === selectedMetric;
+                  const rowBg = rowColors(metric, pctRank);
+
+                  return (
+                    <tr
+                      key={metric}
+                      onClick={() => onMetricSelect?.(metric)}
+                      style={{
+                        ...rowBg,
+                        cursor: onMetricSelect ? 'pointer' : 'default',
+                        outline: isActive ? '2px solid #2563eb' : 'none',
+                        outlineOffset: -2,
+                      }}
+                    >
+                      <td style={{ ...tdName, ...rowBg }}>
+                        {label}
+                        {optional && !d && (
+                          <span style={{ fontSize: 10, color: '#94a3b8', marginLeft: 4 }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ ...td, ...rowBg, fontWeight: 700,
+                                   color: decile === 'top' ? '#15803d' : decile === 'bottom' ? '#b91c1c' : '#0f172a' }}>
+                        {d?.own_rate != null ? fmtMetric(d.own_rate, metric) : '—'}
+                      </td>
+                      <td style={{ ...td, ...rowBg }}>
+                        {d?.peer_median != null ? fmtMetric(d.peer_median, metric) : '—'}
+                      </td>
+                      <td style={{ ...td, ...rowBg, color: '#15803d' }}>
+                        {d?.top_decile_value != null ? fmtMetric(d.top_decile_value, metric) : '—'}
+                      </td>
+                      <td style={{ ...td, ...rowBg, color: '#b91c1c' }}>
+                        {d?.bottom_decile_value != null ? fmtMetric(d.bottom_decile_value, metric) : '—'}
+                      </td>
+                      <td style={{ ...td, ...rowBg }}>
+                        {pctRank != null ? (
+                          <span style={{
+                            fontWeight: 600,
+                            color: decile === 'top' ? '#15803d' : decile === 'bottom' ? '#b91c1c' : '#334155',
+                          }}>
+                            {(pctRank * 100).toFixed(0)}
+                            <sup style={{ fontSize: 9 }}>
+                              {['th','st','nd','rd'][ +`${(pctRank*100).toFixed(0)}`.slice(-1) > 3 ? 0
+                                  : [, 1, 2, 3][+`${(pctRank*100).toFixed(0)}`.slice(-1)] ?? 0] }
+                            </sup>
+                            {' pct'}
+                            {' '}
+                            <StarRow stars={getPeerStars(pctRank, lib)} />
+                          </span>
+                        ) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Regional Context Panel ────────────────────────────────────────────────────
+// P76 exclusive: shows ALL institutions in the primary geography side by side.
+// Highlights the tenant's own institution. Driven by SignalSeparator.
+
+function RegionalContextPanel({ data, metric, ownCharter, signal, isLoading }) {
+  if (isLoading) return <ChartSkeleton height={280} />;
+
+  const institutions = data?.institutions ?? [];
+  const geoLabel     = data?.geography_label ?? 'your geography';
+  const metricDisp   = data?.metric ?? metric;
+  const lib          = LOWER_IS_BETTER.has(metricDisp);
+
+  // Sort lowest → highest rate (left to right; best performers on left for lower-is-better)
+  const sorted = [...institutions]
+    .filter(d => d.rate != null)
+    .sort((a, b) => (a.rate ?? 0) - (b.rate ?? 0));
+
+  const chartData = sorted.map(inst => ({
+    name: inst.institution_name.length > 20
+      ? inst.institution_name.slice(0, 19) + '…'
+      : inst.institution_name,
+    fullName: inst.institution_name,
+    rate: +(( inst.rate) * 100).toFixed(3),
+    isOwn: inst.is_own || inst.charter_number === ownCharter,
+  }));
+
+  const marketMedian = data?.market_median != null
+    ? +((data.market_median) * 100).toFixed(3)
+    : null;
+
+  function CustomTooltip({ active, payload }) {
+    if (!active || !payload?.length) return null;
+    const d = payload[0];
+    return (
+      <div style={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', borderRadius: 6,
+                    padding: '8px 12px', fontSize: 12 }}>
+        <div style={{ fontWeight: 700, marginBottom: 3, color: '#0f172a' }}>{d.payload.fullName}</div>
+        <div style={{ color: '#334155' }}>{fmtRate(d.payload.rate / 100)}</div>
+        {d.payload.isOwn && <div style={{ color: '#2563eb', fontSize: 11, marginTop: 2 }}>▶ Your institution</div>}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+                    marginBottom: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
+            Institutions in {geoLabel}
+          </h3>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#94a3b8' }}>
+            {institutions.length} institution{institutions.length !== 1 ? 's' : ''} ·{' '}
+            {METRIC_FLAT.find(o => o.value === metricDisp)?.callahan ?? metricDisp}
+            {lib ? ' · lower = better' : ' · higher = better'}
+          </p>
+        </div>
+      </div>
+
+      {chartData.length === 0 ? (
+        <div style={{ height: 180, display: 'flex', alignItems: 'center',
+                      justifyContent: 'center', color: '#94a3b8', fontSize: 13 }}>
+          No regional institutions found. Run geocoder to populate county_fips.
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={Math.max(200, chartData.length * 28)}>
+          <BarChart data={chartData} layout="vertical"
+                    margin={{ top: 0, right: 40, bottom: 0, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+            <XAxis
+              type="number"
+              tickFormatter={v => `${v.toFixed(1)}%`}
+              tick={{ fontSize: 11, fill: '#64748b' }}
+              axisLine={false} tickLine={false}
+            />
+            <YAxis
+              type="category" dataKey="name" width={150}
+              tick={({ x, y, payload }) => {
+                const isOwn = chartData.find(d => d.name === payload.value)?.isOwn;
+                return (
+                  <text x={x} y={y} dy={4} textAnchor="end"
+                        fontSize={11} fill={isOwn ? '#2563eb' : '#334155'}
+                        fontWeight={isOwn ? 700 : 400}>
+                    {isOwn ? '▶ ' : ''}{payload.value}
+                  </text>
+                );
+              }}
+              axisLine={false} tickLine={false}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            {marketMedian != null && (
+              <Bar dataKey="rate" name="Delinquency Rate" radius={[0, 3, 3, 0]}>
+                {chartData.map((entry, i) => (
+                  <Cell key={i}
+                    fill={entry.isOwn ? '#2563eb'
+                      : (lib ? entry.rate <= marketMedian : entry.rate >= marketMedian)
+                        ? '#dcfce7'   // light green: at or better than market median
+                        : '#fee2e2'}  // light red: worse than market median
+                    stroke={entry.isOwn ? '#1d4ed8' : 'none'}
+                    strokeWidth={entry.isOwn ? 1.5 : 0}
+                  />
+                ))}
+              </Bar>
+            )}
+            {!marketMedian && (
+              <Bar dataKey="rate" name="Rate" radius={[0, 3, 3, 0]}>
+                {chartData.map((entry, i) => (
+                  <Cell key={i} fill={entry.isOwn ? '#2563eb' : '#94a3b8'} />
+                ))}
+              </Bar>
+            )}
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+
+      {/* Signal in geographic context */}
+      {signal?.signal_type && signal.signal_type !== 'no_signal' && (
+        <div style={{
+          marginTop: 12, padding: '10px 14px', borderRadius: 7,
+          border: '1px solid #e0e7ff', backgroundColor: '#f5f3ff',
+          fontSize: 12, color: '#4c1d95',
+        }}>
+          <strong style={{ fontSize: 13 }}>Regional context: </strong>
+          {signal.interpretation_text ?? `Signal: ${signal.signal_type.replace(/_/g, ' ')}`}
+          <span style={{ fontSize: 11, color: '#7c3aed', marginLeft: 8 }}>
+            ({signal.n_regional_peers ?? '?'} regional · {signal.n_national_peers ?? '?'} national peers)
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChartSkeleton({ height = 320 }) {
   return (
     <div style={{
@@ -454,6 +788,8 @@ export default function CreditQuality({
   const [breakdownData,   setBreakdownData]   = useState(null);
   const [signalData,      setSignalData]      = useState(null);
   const [ewData,          setEwData]          = useState(null);
+  const [fullCompData,    setFullCompData]    = useState(null);
+  const [regionalData,    setRegionalData]    = useState(null);
   const [isLoading,       setIsLoading]       = useState(false);
   const [trendLoading,    setTrendLoading]    = useState(false);
 
@@ -476,17 +812,22 @@ export default function CreditQuality({
     setIsLoading(true);
 
     async function load() {
-      const [kpisResult, bkdResult, signalResult, ewResult] = await Promise.allSettled([
-        apiFetch(ep.kpis(charter, latestPeriod, peerGroupId)),
-        apiFetch(ep.breakdown(charter, latestPeriod, peerGroupId)),
-        apiFetch(ep.signal(charter, selectedMetric, latestPeriod, peerGroupId)),
-        apiFetch(ep.ew(charter, selectedMetric, peerGroupId)),
-      ]);
+      const [kpisResult, bkdResult, signalResult, ewResult, fullCompResult, regionalResult] =
+        await Promise.allSettled([
+          apiFetch(ep.kpis(charter, latestPeriod, peerGroupId)),
+          apiFetch(ep.breakdown(charter, latestPeriod, peerGroupId)),
+          apiFetch(ep.signal(charter, selectedMetric, latestPeriod, peerGroupId)),
+          apiFetch(ep.ew(charter, selectedMetric, peerGroupId)),
+          apiFetch(ep.fullComp(charter, latestPeriod, peerGroupId)),
+          apiFetch(ep.regional(charter, selectedMetric, latestPeriod)),
+        ]);
       if (cancelled) return;
       setKpiData(kpisResult.status === 'fulfilled' ? kpisResult.value : null);
       setBreakdownData(bkdResult.status === 'fulfilled' ? bkdResult.value : null);
       setSignalData(signalResult.status === 'fulfilled' ? signalResult.value : null);
       setEwData(ewResult.status === 'fulfilled' ? ewResult.value : null);
+      setFullCompData(fullCompResult.status === 'fulfilled' ? fullCompResult.value : null);
+      setRegionalData(regionalResult.status === 'fulfilled' ? regionalResult.value : null);
       setIsLoading(false);
     }
     load();
@@ -532,26 +873,53 @@ export default function CreditQuality({
   // ── CSV export for the full page ──────────────────────────────────────────
   const exportCSV = useCallback(() => {
     const rows = [];
-    rows.push(['Metric','Your Value','Peer Median','Percentile Rank']);
+    // KPI summary
+    rows.push([`Credit Quality Export — ${latestPeriod}`, '', '', '', '', '']);
+    rows.push(['KPI Summary', '', '', '', '', '']);
+    rows.push(['Metric', 'Your Value', 'Peer Median', 'Top Decile', 'Bottom Decile', 'Percentile']);
     KPI_METRICS.forEach(({ key, label }) => {
-      const d = kpiData?.[key];
-      rows.push([label, fmtMetric(d?.own_rate, key), fmtMetric(d?.peer_median, key),
-                 d?.percentile_rank != null ? `${(d.percentile_rank * 100).toFixed(1)}%` : '']);
+      const d = fullCompData?.[key] ?? kpiData?.[key];
+      rows.push([
+        label,
+        fmtMetric(d?.own_rate, key),
+        fmtMetric(d?.peer_median, key),
+        fmtMetric(d?.top_decile_value, key),
+        fmtMetric(d?.bottom_decile_value, key),
+        d?.percentile_rank != null ? `${(d.percentile_rank * 100).toFixed(0)}th` : '',
+      ]);
     });
     rows.push([]);
-    rows.push(['Delinquency by Product','','','']);
-    rows.push(['Loan Type','Your Rate','Peer Median','']);
-    (breakdownData ?? []).forEach(d => {
-      rows.push([d.label, fmtRate(d.own_rate), fmtRate(d.peer_median), '']);
+    // Full peer comparison table
+    rows.push(['Full Peer Comparison', '', '', '', '', '']);
+    rows.push(['Metric', 'Your Value', 'Peer Median', 'Top Decile', 'Bottom Decile', 'Percentile']);
+    TABLE_SECTIONS.forEach(section => {
+      rows.push([`— ${section.title} —`, '', '', '', '', '']);
+      section.rows.forEach(({ metric, label }) => {
+        const d = fullCompData?.[metric];
+        rows.push([
+          label,
+          fmtMetric(d?.own_rate, metric),
+          fmtMetric(d?.peer_median, metric),
+          fmtMetric(d?.top_decile_value, metric),
+          fmtMetric(d?.bottom_decile_value, metric),
+          d?.percentile_rank != null ? `${(d.percentile_rank * 100).toFixed(0)}th` : '',
+        ]);
+      });
     });
-    const csv = rows.map(r => r.map(c => JSON.stringify(c ?? '')).join(',')).join('\n');
+    rows.push([]);
+    // Loan type breakdown
+    rows.push(['Delinquency by Product', '', '', '', '', '']);
+    rows.push(['Loan Type', 'Your Rate', 'Peer Median', '', '', '']);
+    (breakdownData ?? []).forEach(d => {
+      rows.push([d.label, fmtRate(d.own_rate), fmtRate(d.peer_median), '', '', '']);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
     Object.assign(document.createElement('a'), {
-      href: url, download: `credit-quality-${latestPeriod}.csv`
+      href: URL.createObjectURL(blob),
+      download: `credit-quality-${latestPeriod}.csv`,
     }).click();
-    URL.revokeObjectURL(url);
-  }, [kpiData, breakdownData, latestPeriod]);
+  }, [kpiData, fullCompData, breakdownData, latestPeriod]);
 
   const threshold    = THRESHOLDS[selectedMetric] ?? null;
   const thresholdPct = threshold != null
@@ -712,6 +1080,38 @@ export default function CreditQuality({
           {/* Loan type breakdown — Callahan's "Delinquency by Product" */}
           <div style={s.card}>
             <LoanTypeBreakdown data={breakdownData} isLoading={isLoading} />
+          </div>
+
+          {/* Peer Comparison Table — Callahan FPR-style full metric table */}
+          <div style={s.card}>
+            <PeerComparisonTable
+              data={fullCompData}
+              isLoading={isLoading}
+              selectedMetric={selectedMetric}
+              onMetricSelect={setSelectedMetric}
+            />
+          </div>
+
+          {/* Regional Context Panel + secondary SignalSeparator — P76 exclusive */}
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+            <div style={{ ...s.card, flex: '1 1 0', minWidth: 0 }}>
+              <RegionalContextPanel
+                data={regionalData}
+                metric={selectedMetric}
+                ownCharter={charter}
+                signal={signalData}
+                isLoading={isLoading}
+              />
+            </div>
+            <div style={{ ...s.card, flex: '0 0 340px', minWidth: 0 }}>
+              <p style={{ ...s.sectionTitle, marginBottom: 10 }}>Market Signal</p>
+              <SignalSeparator
+                signal={signalData}
+                metric={selectedMetric}
+                geography={geoLabel}
+                isLoading={isLoading}
+              />
+            </div>
           </div>
 
         </div>
