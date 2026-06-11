@@ -713,6 +713,8 @@ function Step2({ latestPeriod, onComplete }) {
 // ─── STEP 3: REGIONAL REVEAL ──────────────────────────────────────────────────
 
 function Step3({ latestPeriod, primaryState }) {
+  const [charter, setCharter]   = useState(OWN_CHARTER);
+  const [charterInput, setCharterInput] = useState('');
   const [trend, setTrend]       = useState(null);
   const [signal, setSignal]     = useState(null);
   const [loading, setLoading]   = useState(false);
@@ -722,22 +724,24 @@ function Step3({ latestPeriod, primaryState }) {
   const geoLabel = primaryState ? stateNameFor(primaryState) : 'your market';
 
   useEffect(() => {
-    if (!OWN_CHARTER || !latestPeriod) return;
+    if (!charter || !latestPeriod) return;
     setLoading(true);
+    setTrend(null);
+    setSignal(null);
     Promise.allSettled([
       fetch(
-        `${API}/delinquency/${OWN_CHARTER}/trend?metric=delinq_rate_total&n_quarters=12&peer_group_type=callahan`,
+        `${API}/delinquency/${charter}/trend?metric=delinq_rate_total&n_quarters=12&peer_group_type=callahan`,
         { headers: authHeaders() }
       ).then(r => r.json()),
       fetch(
-        `${API}/delinquency/${OWN_CHARTER}/signal?metric=delinq_rate_total&period=${latestPeriod}&peer_group_type=regional`,
+        `${API}/delinquency/${charter}/signal?metric=delinq_rate_total&period=${latestPeriod}&peer_group_type=regional`,
         { headers: authHeaders() }
       ).then(r => r.json()),
     ]).then(([t, sg]) => {
       if (t.status  === 'fulfilled') setTrend(t.value);
       if (sg.status === 'fulfilled') setSignal(sg.value);
     }).finally(() => setLoading(false));
-  }, [latestPeriod, primaryState]);
+  }, [charter, latestPeriod, primaryState]);
 
   function doReveal() {
     setShowRegional(true);
@@ -752,6 +756,46 @@ function Step3({ latestPeriod, primaryState }) {
         Then we'll add the {geoLabel} regional layer that tells you whether your delinquency
         is a <em>you-problem</em> or a <em>{geoLabel}-problem</em>.
       </p>
+
+      {/* Charter input — shown when env var isn't set */}
+      {!charter && (
+        <div style={{
+          background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+          padding: '18px 20px', marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#1e293b', marginBottom: 4 }}>
+            Enter your NCUA charter number to load your data
+          </div>
+          <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 12px', lineHeight: 1.5 }}>
+            Your charter number is the 5–6 digit number in NCUA's database (e.g. 68535).
+            You can find it at mycreditunion.gov or in Callahan's institution header.
+          </p>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              type="text"
+              value={charterInput}
+              onChange={e => setCharterInput(e.target.value.replace(/\D/g, ''))}
+              placeholder="e.g. 68535"
+              maxLength={7}
+              style={{ ...s.input, width: 140 }}
+              onKeyDown={e => { if (e.key === 'Enter' && charterInput.length >= 4) setCharter(charterInput); }}
+            />
+            <button
+              onClick={() => { if (charterInput.length >= 4) setCharter(charterInput); }}
+              disabled={charterInput.length < 4}
+              style={{ ...s.primaryBtn, opacity: charterInput.length < 4 ? 0.5 : 1 }}
+            >
+              Load my data →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {charter && !loading && !trend && (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+          {latestPeriod ? 'Loading 12-quarter trend…' : 'Waiting for latest period…'}
+        </div>
+      )}
 
       {loading && (
         <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
