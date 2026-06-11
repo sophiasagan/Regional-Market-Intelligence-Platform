@@ -5,11 +5,14 @@ All data sourced from NCUA 5300 Call Report (institutions_quarterly table).
 Confidence level is always 'measured' — no geographic allocation required.
 
 Endpoints:
+  GET /delinquency/latest-period     → Most recent data_period in database
   GET /delinquency/summary           → KPI cards for current period
   GET /delinquency/trend             → Multi-period trend for one metric
   GET /delinquency/peer-distribution → Box-plot distribution across peers
   GET /delinquency/loan-breakdown    → Per-loan-type delinquency rates
   GET /delinquency/regional          → All institutions in same state/region
+  GET /delinquency/{charter}/trend   → Per-institution trend with full peer band
+  GET /delinquency/{charter}/signal  → Institution vs market signal classification
 """
 from __future__ import annotations
 
@@ -800,4 +803,376 @@ async def regional_context(
         "economy_signals": {
             "available": False,
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /delinquency/latest-period
+# NOTE: This must be defined BEFORE /{charter}/... routes so FastAPI does not
+# try to match the literal "latest-period" string as a charter path parameter.
+# ---------------------------------------------------------------------------
+@router.get("/latest-period")
+async def latest_period_endpoint():
+    """Return the most recent data_period available in institutions_quarterly."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("""
+                SELECT data_period FROM institutions_quarterly
+                WHERE total_loans > 0
+                ORDER BY data_period DESC LIMIT 1
+            """)
+        ).fetchone()
+    return {"period": row[0] if row else "2024Q4"}
+
+
+# ---------------------------------------------------------------------------
+# GET /delinquency/{charter}/trend
+# ---------------------------------------------------------------------------
+@router.get("/{charter}/trend")
+async def charter_trend(
+    charter: str,
+    metric: str = Query(default="delinq_rate_total"),
+    n_quarters: int = Query(default=12, ge=2, le=20),
+    peer_group_type: str = Query(default="callahan"),
+):
+    """
+    12-quarter trend for a single institution with full peer band data.
+
+    peer_group_type:
+      callahan  — national peers within ±50% of own assets (Callahan default)
+      state     — same-state peers within ±50% assets
+      regional  — all institutions in same state, no asset filter
+
+    Response matches PeerBandChart prop shapes exactly:
+      institution      [{period, value}]        own institution line
+      peer_median      [{period, value}]        dashed gray median
+      peer_top_decile  [{period, value}]        p10 (best performers; teal)
+      peer_bottom_decile [{period, value}]      p90 (worst performers; coral)
+      peer_band        [{period, p25, p75}]     IQR shaded fill
+      regional_median  [{period, value}]        always computed (revealed on demand)
+      periods          string[]
+      peer_count       int   (latest period)
+      percentile_rank  float 0–1 (latest period; lower = better for adverse metrics)
+    """
+    if metric not in ALLOWED_METRICS:
+        raise HTTPException(400, f"metric must be one of: {sorted(ALLOWED_METRICS)}")
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        # Resolve latest available period
+        latest_row = conn.execute(
+            text("""
+                SELECT data_period FROM institutions_quarterly
+                WHERE total_loans > 0
+                ORDER BY data_period DESC LIMIT 1
+            """)
+        ).fetchone()
+        latest_available = latest_row[0] if latest_row else "2024Q4"
+
+        own = _resolve_institution(conn, charter, latest_available)
+        if not own:
+            raise HTTPException(404, f"No data found for charter {charter!r}")
+
+        resolved_period = own.get("data_period", latest_available)
+        own_assets  = _safe_float(own.get("total_assets")) or 0
+        own_state   = own.get("state") or ""
+        own_charter = own.get("charter_number", charter)
+
+        periods = _recent_periods(resolved_period, n_quarters)
+        p_keys  = [f"p{i}" for i in range(len(periods))]
+        p_ph    = ", ".join(f":{k}" for k in p_keys)
+        p_params = {k: v for k, v in zip(p_keys, periods)}
+
+        # ── Own institution across all periods ────────────────────────────
+        own_rows = conn.execute(
+            text(f"""
+                SELECT data_period, {metric} AS value
+                FROM institutions_quarterly
+                WHERE charter_number = :charter
+                  AND data_period IN ({p_ph})
+                ORDER BY data_period ASC
+            """),
+            {**p_params, "charter": own_charter},
+        ).mappings().fetchall()
+        own_by_period = {r["data_period"]: _safe_float(r["value"]) for r in own_rows}
+
+        # ── Peer asset window (Callahan ±50%) ─────────────────────────────
+        lo = own_assets * 0.50 if own_assets > 0 else 0
+        hi = own_assets * 1.50 if own_assets > 0 else 1e15
+
+        if peer_group_type == "callahan":
+            peer_filter = f"""
+                data_period IN ({p_ph})
+                AND {metric} IS NOT NULL AND {metric} > 0
+                AND charter_number != :charter
+                AND (:lo = 0 OR total_assets BETWEEN :lo AND :hi)
+            """
+            peer_params = {**p_params, "charter": own_charter, "lo": lo, "hi": hi}
+        elif peer_group_type == "regional":
+            peer_filter = f"""
+                data_period IN ({p_ph})
+                AND {metric} IS NOT NULL AND {metric} > 0
+                AND charter_number != :charter
+                AND state = :state
+            """
+            peer_params = {**p_params, "charter": own_charter, "state": own_state}
+        else:  # state — same state + asset range
+            peer_filter = f"""
+                data_period IN ({p_ph})
+                AND {metric} IS NOT NULL AND {metric} > 0
+                AND charter_number != :charter
+                AND state = :state
+                AND (:lo = 0 OR total_assets BETWEEN :lo AND :hi)
+            """
+            peer_params = {**p_params, "charter": own_charter,
+                           "state": own_state, "lo": lo, "hi": hi}
+
+        peer_stats = conn.execute(
+            text(f"""
+                SELECT data_period,
+                       COUNT(*)                                                   AS n,
+                       percentile_cont(0.10) WITHIN GROUP (ORDER BY {metric})    AS p10,
+                       percentile_cont(0.25) WITHIN GROUP (ORDER BY {metric})    AS p25,
+                       percentile_cont(0.50) WITHIN GROUP (ORDER BY {metric})    AS median,
+                       percentile_cont(0.75) WITHIN GROUP (ORDER BY {metric})    AS p75,
+                       percentile_cont(0.90) WITHIN GROUP (ORDER BY {metric})    AS p90
+                FROM institutions_quarterly
+                WHERE {peer_filter}
+                GROUP BY data_period
+                ORDER BY data_period ASC
+            """),
+            peer_params,
+        ).mappings().fetchall()
+        peer_by_period = {r["data_period"]: r for r in peer_stats}
+
+        # ── Regional median — always computed so UI can reveal it ─────────
+        regional_stats = conn.execute(
+            text(f"""
+                SELECT data_period,
+                       percentile_cont(0.50) WITHIN GROUP (ORDER BY {metric}) AS median
+                FROM institutions_quarterly
+                WHERE data_period IN ({p_ph})
+                  AND {metric} IS NOT NULL AND {metric} > 0
+                  AND state = :state
+                  AND charter_number != :charter
+                GROUP BY data_period
+                ORDER BY data_period ASC
+            """),
+            {**p_params, "state": own_state, "charter": own_charter},
+        ).mappings().fetchall()
+        regional_by_period = {r["data_period"]: _safe_float(r["median"]) for r in regional_stats}
+
+        # ── Identify most recent period that has peer data ───────────────
+        latest_with_peers = next(
+            (p for p in reversed(periods) if peer_by_period.get(p)), periods[-1]
+        )
+        own_latest = own_by_period.get(latest_with_peers)
+
+    # Percentile rank via IQR interpolation (avoids a second full-table scan)
+    def _pct_rank_from_iqr(val, ps) -> Optional[float]:
+        p25 = _safe_float((ps or {}).get("p25"))
+        med = _safe_float((ps or {}).get("median"))
+        p75 = _safe_float((ps or {}).get("p75"))
+        if val is None or p25 is None or med is None or p75 is None:
+            return None
+        if val <= p25:
+            return 0.25 * (val / p25) if p25 > 0 else 0.0
+        if val <= med:
+            span = med - p25
+            return 0.25 + 0.25 * ((val - p25) / span) if span > 0 else 0.375
+        if val <= p75:
+            span = p75 - med
+            return 0.50 + 0.25 * ((val - med) / span) if span > 0 else 0.625
+        return min(1.0, 0.75 + 0.25 * ((val - p75) / (p75 or 0.001)))
+
+    latest_ps = peer_by_period.get(latest_with_peers)
+    peer_count = int(latest_ps["n"]) if latest_ps else 0
+    percentile_rank = _pct_rank_from_iqr(own_latest, latest_ps)
+
+    # ── Build response arrays ─────────────────────────────────────────────
+    institution_out  = []
+    peer_median_out  = []
+    peer_top_out     = []
+    peer_bottom_out  = []
+    peer_band_out    = []
+    regional_out     = []
+
+    for p in periods:
+        ps = peer_by_period.get(p)
+        institution_out.append({"period": p, "value": own_by_period.get(p)})
+        peer_median_out.append({"period": p, "value": _safe_float((ps or {}).get("median"))})
+        # For adverse metrics: p10 = best performers (teal), p90 = worst (coral)
+        peer_top_out.append(   {"period": p, "value": _safe_float((ps or {}).get("p10"))})
+        peer_bottom_out.append({"period": p, "value": _safe_float((ps or {}).get("p90"))})
+        peer_band_out.append({
+            "period": p,
+            "p25": _safe_float((ps or {}).get("p25")),
+            "p75": _safe_float((ps or {}).get("p75")),
+        })
+        regional_out.append({"period": p, "value": regional_by_period.get(p)})
+
+    return {
+        "institution":        institution_out,
+        "peer_median":        peer_median_out,
+        "peer_top_decile":    peer_top_out,
+        "peer_bottom_decile": peer_bottom_out,
+        "peer_band":          peer_band_out,
+        "regional_median":    regional_out,
+        "periods":            periods,
+        "peer_count":         peer_count,
+        "percentile_rank":    percentile_rank,
+        "metric":             metric,
+        "peer_group_type":    peer_group_type,
+        "confidence":         "measured",
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /delinquency/{charter}/signal
+# ---------------------------------------------------------------------------
+@router.get("/{charter}/signal")
+async def charter_signal(
+    charter: str,
+    metric: str = Query(default="delinq_rate_total"),
+    period: str = Query(default=""),
+    peer_group_type: str = Query(default="regional"),
+):
+    """
+    Compute institution vs market signal separation (CLAUDE.md §Signal Separator).
+
+    Three signal types:
+      regional_pressure    — institution AND region both above national median
+      institution_specific — institution above regional median, region near national
+      outperforming_market — region above national, institution at or below regional
+
+    Response matches SignalSeparator's signal prop:
+      { signal_type, institution_value, regional_median, national_median,
+        interpretation_text, peer_label, n_regional_peers, n_national_peers }
+    """
+    if metric not in ALLOWED_METRICS:
+        raise HTTPException(400, f"metric must be one of: {sorted(ALLOWED_METRICS)}")
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        if not period:
+            row = conn.execute(
+                text("""
+                    SELECT data_period FROM institutions_quarterly
+                    WHERE total_loans > 0
+                    ORDER BY data_period DESC LIMIT 1
+                """)
+            ).fetchone()
+            period = row[0] if row else "2024Q4"
+
+        own = _resolve_institution(conn, charter, period)
+        if not own:
+            raise HTTPException(404, f"No data found for charter {charter!r}")
+
+        resolved_period = own.get("data_period", period)
+        own_state   = own.get("state") or ""
+        own_val     = _safe_float(own.get(metric))
+        own_charter = own.get("charter_number", charter)
+
+        # Regional median — all institutions in same state
+        regional_row = conn.execute(
+            text(f"""
+                SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY {metric}) AS median,
+                       COUNT(*) AS n
+                FROM institutions_quarterly
+                WHERE data_period = :period
+                  AND state = :state
+                  AND {metric} IS NOT NULL AND {metric} > 0
+                  AND charter_number != :charter
+            """),
+            {"period": resolved_period, "state": own_state, "charter": own_charter},
+        ).fetchone()
+        regional_median = _safe_float(regional_row[0]) if regional_row else None
+        n_regional = int(regional_row[1] or 0) if regional_row else 0
+
+        # National median — all institutions
+        national_row = conn.execute(
+            text(f"""
+                SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY {metric}) AS median,
+                       COUNT(*) AS n
+                FROM institutions_quarterly
+                WHERE data_period = :period
+                  AND {metric} IS NOT NULL AND {metric} > 0
+                  AND charter_number != :charter
+            """),
+            {"period": resolved_period, "charter": own_charter},
+        ).fetchone()
+        national_median = _safe_float(national_row[0]) if national_row else None
+        n_national = int(national_row[1] or 0) if national_row else 0
+
+    # ── Signal classification (CLAUDE.md §Institution vs market signal) ──
+    # For adverse metrics (delinquency, charge-offs): above median = worse
+    REGIONAL_STRESS_THRESHOLD = 1.10  # region is 10%+ above national = regional stress
+
+    if own_val is None or regional_median is None or national_median is None:
+        signal_type = "institution_specific"
+    elif (regional_median > national_median * REGIONAL_STRESS_THRESHOLD
+          and own_val > national_median):
+        signal_type = "regional_pressure"
+    elif (regional_median > national_median * REGIONAL_STRESS_THRESHOLD
+          and own_val <= regional_median):
+        signal_type = "outperforming_market"
+    elif own_val > regional_median * 1.15:
+        signal_type = "institution_specific"
+    else:
+        # Institution near or below regional — favorable or mixed
+        signal_type = "institution_specific"
+
+    # ── Human-readable interpretation ─────────────────────────────────────
+    def _fmt(v: Optional[float]) -> str:
+        if v is None:
+            return "—"
+        return f"{v * 100:.2f}%"
+
+    peer_label = f"{own_state} credit unions"
+
+    if signal_type == "regional_pressure":
+        interpretation_text = (
+            f"Both your institution ({_fmt(own_val)}) and the {own_state} regional median "
+            f"({_fmt(regional_median)}) exceed the national median ({_fmt(national_median)}). "
+            f"This pattern is consistent with regional economic headwinds — the elevated "
+            f"delinquency is shared across {n_regional} peers in your market, not isolated "
+            f"to your institution's underwriting."
+        )
+    elif signal_type == "outperforming_market":
+        interpretation_text = (
+            f"The {own_state} market is under pressure — regional median "
+            f"({_fmt(regional_median)}) exceeds the national median ({_fmt(national_median)}). "
+            f"Your institution ({_fmt(own_val)}) is at or below the regional median, "
+            f"meaning you are managing better than most of your {n_regional} regional peers. "
+            f"Continue monitoring as regional conditions may affect your borrowers."
+        )
+    else:  # institution_specific
+        if own_val is not None and regional_median is not None and own_val > regional_median:
+            interpretation_text = (
+                f"Your institution ({_fmt(own_val)}) exceeds the {own_state} regional median "
+                f"({_fmt(regional_median)}), while the region is near the national benchmark "
+                f"({_fmt(national_median)}). This institution-specific pattern warrants a review "
+                f"of underwriting criteria, portfolio concentration, or collection effectiveness."
+            )
+        else:
+            interpretation_text = (
+                f"Your institution ({_fmt(own_val)}) is performing near or below the "
+                f"{own_state} regional median ({_fmt(regional_median)}). "
+                f"No significant divergence from regional or national benchmarks detected "
+                f"({_fmt(national_median)} national median across {n_national} institutions)."
+            )
+
+    return {
+        "signal_type":        signal_type,
+        "institution_value":  own_val,
+        "regional_median":    regional_median,
+        "national_median":    national_median,
+        "interpretation_text": interpretation_text,
+        "peer_label":         peer_label,
+        "n_regional_peers":   n_regional,
+        "n_national_peers":   n_national,
+        "period":             resolved_period,
+        "metric":             metric,
+        "confidence":         "measured",
     }
