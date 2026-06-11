@@ -710,6 +710,116 @@ function Step2({ latestPeriod, onComplete }) {
   );
 }
 
+// ─── STEP 3 LOADER ────────────────────────────────────────────────────────────
+
+const LOADER_STYLE = `
+@keyframes p76-bar-slide {
+  0%   { transform: translateX(-100%); }
+  50%  { transform: translateX(0%);    }
+  100% { transform: translateX(100%);  }
+}
+@keyframes p76-spin {
+  to { transform: rotate(360deg); }
+}
+`;
+
+function Step3Loader({ periodReady, dataLoading }) {
+  const steps = [
+    { label: 'Connect to data source',          done: periodReady },
+    { label: 'Load 12-quarter delinquency trend', done: !dataLoading && periodReady },
+    { label: 'Compute peer signal separation',    done: !dataLoading && periodReady },
+  ];
+
+  const activeIdx = steps.findIndex(st => !st.done);
+  const activeStep = steps[activeIdx] ?? steps[steps.length - 1];
+  const isSpinning = !periodReady || dataLoading;
+
+  return (
+    <div style={{
+      border: '1px solid #e2e8f0', borderRadius: 8,
+      overflow: 'hidden', marginBottom: 16,
+    }}>
+      <style>{LOADER_STYLE}</style>
+
+      {/* Animated bar */}
+      <div style={{ height: 3, background: '#e2e8f0', overflow: 'hidden', position: 'relative' }}>
+        {isSpinning ? (
+          <div style={{
+            position: 'absolute', inset: 0,
+            background: 'linear-gradient(90deg, transparent 0%, #2563eb 40%, #2563eb 60%, transparent 100%)',
+            animation: 'p76-bar-slide 1.4s ease-in-out infinite',
+          }} />
+        ) : (
+          <div style={{ height: '100%', width: '100%', background: '#16a34a', transition: 'width 0.4s' }} />
+        )}
+      </div>
+
+      <div style={{ padding: '20px 24px' }}>
+        {/* Status label */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+          {isSpinning && (
+            <div style={{
+              width: 14, height: 14, borderRadius: '50%',
+              border: '2px solid #dbeafe', borderTopColor: '#2563eb',
+              animation: 'p76-spin 0.8s linear infinite',
+              flexShrink: 0,
+            }} />
+          )}
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#1e293b' }}>
+            {isSpinning ? activeStep.label + '…' : 'Data loaded'}
+          </span>
+        </div>
+
+        {/* Steps */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {steps.map((step, i) => {
+            const isActive  = i === activeIdx && isSpinning;
+            const isDone    = step.done;
+            const isPending = !isDone && !isActive;
+            return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {/* Icon */}
+                <div style={{
+                  width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 10, fontWeight: 700,
+                  background: isDone ? '#dcfce7' : isActive ? '#dbeafe' : '#f1f5f9',
+                  color:      isDone ? '#16a34a' : isActive ? '#2563eb' : '#94a3b8',
+                  border: `1.5px solid ${isDone ? '#86efac' : isActive ? '#93c5fd' : '#e2e8f0'}`,
+                }}>
+                  {isDone ? '✓' : i + 1}
+                </div>
+                {/* Label */}
+                <span style={{
+                  fontSize: 12,
+                  fontWeight: isActive ? 600 : 400,
+                  color: isDone ? '#16a34a' : isActive ? '#1e293b' : '#94a3b8',
+                }}>
+                  {step.label}
+                </span>
+                {/* Step bar */}
+                <div style={{
+                  flex: 1, height: 2, borderRadius: 2, marginLeft: 4,
+                  background: isDone ? '#86efac' : isActive ? '#bfdbfe' : '#f1f5f9',
+                  overflow: 'hidden', position: 'relative',
+                }}>
+                  {isActive && (
+                    <div style={{
+                      position: 'absolute', inset: 0,
+                      background: 'linear-gradient(90deg, transparent, #2563eb, transparent)',
+                      animation: 'p76-bar-slide 1.4s ease-in-out infinite',
+                    }} />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── STEP 3: REGIONAL REVEAL ──────────────────────────────────────────────────
 
 function Step3({ latestPeriod, primaryState }) {
@@ -791,16 +901,12 @@ function Step3({ latestPeriod, primaryState }) {
         </div>
       )}
 
-      {charter && !loading && !trend && (
-        <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
-          {latestPeriod ? 'Loading 12-quarter trend…' : 'Waiting for latest period…'}
-        </div>
+      {charter && (loading || (!trend && latestPeriod)) && (
+        <Step3Loader periodReady={!!latestPeriod} dataLoading={loading} />
       )}
 
-      {loading && (
-        <div style={{ padding: '40px 0', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
-          Loading 12-quarter trend…
-        </div>
+      {charter && !latestPeriod && !loading && !trend && (
+        <Step3Loader periodReady={false} dataLoading={false} />
       )}
 
       {trend && (
